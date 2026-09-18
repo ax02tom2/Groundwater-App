@@ -96,7 +96,7 @@ if uploaded_file:
     start_dt = pd.to_datetime(f"{start_date} {start_time}")
     end_dt = pd.to_datetime(f"{end_date} {end_time}")
 
-    # --- 縱軸範圍設定 (水位與雨量) ---
+    # --- 縱軸範圍設定 ---
     st.sidebar.markdown("---")
     st.sidebar.header("⚙️ 3. 圖表縱軸 (Y 軸) 範圍設定")
     
@@ -168,7 +168,19 @@ if uploaded_file:
                 row_heights=[0.7, 0.3] if has_rain else [1.0]
             )
             
-            # 上圖：地下水位折線圖
+            # 準備對應雨量數據給水位圖做 hover 顯示
+            rain_hover_vals = []
+            if has_rain:
+                # 建立一個以時間為 key 的雨量對照
+                rain_dict = dict(zip(df_rain[r_time_col], df_rain[r_val_col]))
+                for t in df_filtered[time_col]:
+                    # 尋找當天或最接近的雨量
+                    match_val = rain_dict.get(pd.Timestamp(t.date()), 0.0)
+                    rain_hover_vals.append(match_val)
+            else:
+                rain_hover_vals = [0.0] * len(df_filtered)
+
+            # 上圖：地下水位折線圖（同時帶入雨量數據到 customdata 中）
             fig.add_trace(
                 go.Scatter(
                     x=df_filtered[time_col], 
@@ -176,7 +188,8 @@ if uploaded_file:
                     mode='lines', 
                     name="地下水位", 
                     line=dict(color="#1f77b4", width=2),
-                    hovertemplate="水位: %{y:.3f} m<extra></extra>"
+                    customdata=rain_hover_vals,
+                    hovertemplate="水位: %{y:.3f} m<br>當日雨量: %{customdata:.1f} mm<extra></extra>"
                 ),
                 row=1, col=1
             )
@@ -234,7 +247,6 @@ if uploaded_file:
                         yanchor="top"
                     )
 
-            # 🌟 關鍵設定：hovermode 設為 'x unified'，讓上下兩圖的滑鼠懸停資訊完美同步整合
             fig.update_layout(
                 template="plotly_white", 
                 hovermode="x unified",
