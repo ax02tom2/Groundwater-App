@@ -6,11 +6,22 @@ import re
 
 st.set_page_config(page_title="地下水位與降雨分析工具", page_icon="💧", layout="wide")
 st.title("💧 地下水位升降與颱風降雨分析工具")
-st.write("上傳 HOBO 水位紀錄器資料，並可選配「降雨量」資料進行疊圖，輕鬆分析颱風事件的洩降與補注反應。")
+st.write("上傳水位紀錄器資料，並可選配「降雨量」資料進行疊圖，輕鬆分析颱風事件的洩降與補注反應。")
 
 @st.cache_data
 def load_and_clean_data(file):
-    df = pd.read_csv(file)
+    # 🌟 關鍵修復：智慧判斷檔案編碼 (UTF-8 失敗時自動轉為 Big5)
+    try:
+        df = pd.read_csv(file, encoding='utf-8')
+    except UnicodeDecodeError:
+        # 讀取失敗時，將檔案指標退回原點，改用 Big5 讀取
+        file.seek(0)
+        try:
+            df = pd.read_csv(file, encoding='big5')
+        except UnicodeDecodeError:
+            file.seek(0)
+            df = pd.read_csv(file, encoding='cp950', errors='ignore')
+
     time_col, val_col = df.columns[0], df.columns[1]
     
     def clean_time(t):
@@ -39,7 +50,6 @@ if uploaded_file:
         st.error("⚠️ 水位檔案中的日期或數值無法解析，請檢查 CSV 格式。")
         st.stop()
         
-    # --- 新增功能：歷年最高與最低水位 ---
     max_idx = df[water_col].idxmax()
     min_idx = df[water_col].idxmin()
     max_time, max_val = df.loc[max_idx, time_col], df.loc[max_idx, water_col]
@@ -51,12 +61,10 @@ if uploaded_file:
         
     min_date, max_date = df[time_col].min(), df[time_col].max()
     
-    # 若有上傳雨量資料，一併讀取
     df_rain = None
     if uploaded_rain:
         with st.spinner("正在解析降雨資料..."):
             df_rain, r_time_col, r_val_col = load_and_clean_data(uploaded_rain)
-            # 調整時間區間以涵蓋雨量與水位
             if not df_rain.empty:
                 min_date = min(min_date, df_rain[r_time_col].min())
                 max_date = max(max_date, df_rain[r_time_col].max())
@@ -95,18 +103,14 @@ if uploaded_file:
 
             st.markdown("### 📈 水位與降雨事件歷線圖")
             
-            # --- 新增功能：雙 Y 軸互動圖表 ---
-            # 建立雙 Y 軸圖表 (右側為雨量，倒轉顯示)
             fig = make_subplots(specs=[[{"secondary_y": True}]])
             
-            # 加入水位線 (主 Y 軸)
             fig.add_trace(
                 go.Scatter(x=df_filtered[time_col], y=df_filtered[water_col], 
                            mode='lines', name="地下水位", line=dict(color="#1f77b4", width=2)),
                 secondary_y=False
             )
             
-            # 加入降雨量長條圖 (副 Y 軸)
             if df_rain is not None and not df_rain.empty:
                 df_rain_filtered = df_rain[(df_rain[r_time_col] >= start_dt) & (df_rain[r_time_col] <= end_dt)]
                 if not df_rain_filtered.empty:
@@ -116,7 +120,6 @@ if uploaded_file:
                         secondary_y=True
                     )
             
-            # 設定圖表樣式與倒轉降雨量 Y 軸
             fig.update_layout(
                 template="plotly_white", 
                 hovermode="x unified",
