@@ -3,10 +3,11 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import re
+from datetime import datetime
 
 st.set_page_config(page_title="地下水位與降雨分析工具", page_icon="💧", layout="wide")
 st.title("💧 地下水位升降與颱風降雨分析工具")
-st.write("上傳水位紀錄器資料，並可選配「降雨量」資料進行上下雙圖對照，輕鬆分析颱風事件的反應。")
+st.write("上傳水位與降雨資料，支援上下雙圖對照、降雨量朝上顯示，並可自訂颱風事件標註。")
 
 @st.cache_data
 def load_and_clean_water(file):
@@ -89,7 +90,6 @@ if uploaded_file:
 
     st.sidebar.markdown("---")
     st.sidebar.header("⏱️ 2. 颱風/事件區間設定")
-    st.sidebar.write("請設定您想觀察的事件時間範圍：")
     start_date = st.sidebar.date_input("開始日期", min_date.date(), min_value=min_date.date(), max_value=max_date.date())
     start_time = st.sidebar.time_input("開始時間", min_date.time())
     end_date = st.sidebar.date_input("結束日期", max_date.date(), min_value=min_date.date(), max_value=max_date.date())
@@ -97,7 +97,29 @@ if uploaded_file:
     
     start_dt = pd.to_datetime(f"{start_date} {start_time}")
     end_dt = pd.to_datetime(f"{end_date} {end_time}")
+
+    # --- 新增功能：側邊欄自訂颱風事件標註 ---
+    st.sidebar.markdown("---")
+    st.sidebar.header("📌 3. 颱風事件標註設定")
+    st.sidebar.write("輸入事件名稱與發生日期，即可在圖表上畫出垂直標註線：")
     
+    # 預設幾個常用範例供參考
+    default_events = "凱米颱風, 2024-07-24\n康芮颱風, 2024-10-31"
+    events_input = st.sidebar.text_area("事件清單 (格式：名稱, YYYY-MM-DD)", value=default_events, height=100)
+    
+    custom_events = []
+    if events_input:
+        for line in events_input.split("\n"):
+            if "," in line:
+                parts = line.split(",")
+                ev_name = parts[0].strip()
+                ev_date_str = parts[1].strip()
+                try:
+                    ev_dt = pd.to_datetime(ev_date_str)
+                    custom_events.append((ev_name, ev_dt))
+                except:
+                    pass
+
     if start_dt >= end_dt:
         st.sidebar.error("開始時間必須早於結束時間！")
     else:
@@ -121,7 +143,6 @@ if uploaded_file:
 
             st.markdown("### 📈 水位與降雨事件歷線圖")
             
-            # 建立上下雙圖排版 (row 1: 水位, row 2: 降雨)
             has_rain = df_rain is not None and not df_rain.empty
             rows_count = 2 if has_rain else 1
             
@@ -139,7 +160,7 @@ if uploaded_file:
                 row=1, col=1
             )
             
-            # 下圖：降雨量長條圖 (若有上傳)
+            # 下圖：降雨量長條圖 (修正為正向朝上)
             if has_rain:
                 df_rain_filtered = df_rain[(df_rain[r_time_col] >= start_dt) & (df_rain[r_time_col] <= end_dt)]
                 if not df_rain_filtered.empty:
@@ -148,13 +169,35 @@ if uploaded_file:
                                name="降雨量 (mm)", marker_color="rgba(0, 150, 255, 0.7)"),
                         row=2, col=1
                     )
-                    # 降雨量圖通常希望 Y 軸由大到小（從上往下長），呈現雨勢落下感
-                    fig.update_yaxes(title_text="降雨量 (mm)", autorange="reversed", row=2, col=1)
+                    # 降雨量維持正常正向 Y 軸（由 0 往上增加）
+                    fig.update_yaxes(title_text="降雨量 (mm)", row=2, col=1)
             
+            # 加入颱風事件垂直標註線與文字
+            for ev_name, ev_dt in custom_events:
+                if start_dt <= ev_dt <= end_dt:
+                    fig.add_vline(
+                        x=ev_dt, 
+                        line_width=1.5, 
+                        line_dash="dash", 
+                        line_color="red",
+                        row="all", col=1
+                    )
+                    fig.add_annotation(
+                        x=ev_dt,
+                        y=1.0,
+                        yref="paper",
+                        text=ev_name,
+                        showarrow=False,
+                        textangle=-90,
+                        font=dict(size=12, color="red"),
+                        xanchor="left",
+                        yanchor="top"
+                    )
+
             fig.update_layout(
                 template="plotly_white", 
                 hovermode="x unified",
-                height=600 if has_rain else 400,
+                height=650 if has_rain else 450,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
             fig.update_yaxes(title_text="水位 (m)", row=1, col=1)
