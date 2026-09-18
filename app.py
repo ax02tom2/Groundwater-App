@@ -6,11 +6,10 @@ import re
 
 st.set_page_config(page_title="地下水位與降雨分析工具", page_icon="💧", layout="wide")
 st.title("💧 地下水位升降與颱風降雨分析工具")
-st.write("上傳水位紀錄器資料，並可選配「降雨量」資料進行疊圖，輕鬆分析颱風事件的洩降與補注反應。")
+st.write("上傳水位紀錄器資料，並可選配「降雨量」資料進行上下雙圖對照，輕鬆分析颱風事件的反應。")
 
 @st.cache_data
-def load_and_clean_data(file):
-    # 智慧判斷檔案編碼 (UTF-8 失敗時自動轉為 Big5)
+def load_and_clean_water(file):
     try:
         df = pd.read_csv(file, encoding='utf-8')
     except UnicodeDecodeError:
@@ -25,14 +24,30 @@ def load_and_clean_data(file):
     
     def clean_time(t):
         t = str(t)
-        # 完整對應各類亂碼與中文時間字元
         t = t.replace('®É', ':').replace('¤À', ':').replace('¬í', '')
         t = t.replace('時', ':').replace('分', ':').replace('秒', '')
         cleaned = re.sub(r'[^\d/\-\: ]', ' ', t)
         return re.sub(r'\s+', ' ', cleaned).strip()
 
     df[time_col] = df[time_col].apply(clean_time)
-    # 升級時間解析，支援混合格式與中文時間轉譯
+    df[time_col] = pd.to_datetime(df[time_col], errors='coerce', format='mixed')
+    df[val_col] = pd.to_numeric(df[val_col], errors='coerce')
+    
+    return df.dropna(subset=[time_col, val_col]).sort_values(by=time_col).reset_index(drop=True), time_col, val_col
+
+@st.cache_data
+def load_and_clean_rain(file):
+    try:
+        df = pd.read_csv(file, encoding='utf-8')
+    except UnicodeDecodeError:
+        file.seek(0)
+        try:
+            df = pd.read_csv(file, encoding='big5')
+        except UnicodeDecodeError:
+            file.seek(0)
+            df = pd.read_csv(file, encoding='cp950', errors='ignore')
+
+    time_col, val_col = df.columns[0], df.columns[1]
     df[time_col] = pd.to_datetime(df[time_col], errors='coerce', format='mixed')
     df[val_col] = pd.to_numeric(df[val_col], errors='coerce')
     
@@ -45,7 +60,7 @@ uploaded_rain = st.sidebar.file_uploader("上傳降雨量 CSV 檔 (選配)", typ
 
 if uploaded_file:
     with st.spinner("正在解析水位資料..."):
-        df, time_col, water_col = load_and_clean_data(uploaded_file)
+        df, time_col, water_col = load_and_clean_water(uploaded_file)
     
     if df.empty:
         st.error("⚠️ 水位檔案中的日期或數值無法解析，請檢查 CSV 格式。")
@@ -64,9 +79,10 @@ if uploaded_file:
     min_date, max_date = df[time_col].min(), df[time_col].max()
     
     df_rain = None
+    r_time_col, r_val_col = None, None
     if uploaded_rain:
         with st.spinner("正在解析降雨資料..."):
-            df_rain, r_time_col, r_val_col = load_and_clean_data(uploaded_rain)
+            df_rain, r_time_col, r_val_col = load_and_clean_rain(uploaded_rain)
             if not df_rain.empty:
                 min_date = min(min_date, df_rain[r_time_col].min())
                 max_date = max(max_date, df_rain[r_time_col].max())
@@ -105,30 +121,43 @@ if uploaded_file:
 
             st.markdown("### 📈 水位與降雨事件歷線圖")
             
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            # 建立上下雙圖排版 (row 1: 水位, row 2: 降雨)
+            has_rain = df_rain is not None and not df_rain.empty
+            rows_count = 2 if has_rain else 1
             
+            fig = make_subplots(
+                rows=rows_count, cols=1, 
+                shared_xaxes=True, 
+                vertical_spacing=0.1,
+                row_heights=[0.7, 0.3] if has_rain else [1.0]
+            )
+            
+            # 上圖：地下水位折線圖
             fig.add_trace(
                 go.Scatter(x=df_filtered[time_col], y=df_filtered[water_col], 
                            mode='lines', name="地下水位", line=dict(color="#1f77b4", width=2)),
-                secondary_y=False
+                row=1, col=1
             )
             
-            if df_rain is not None and not df_rain.empty:
+            # 下圖：降雨量長條圖 (若有上傳)
+            if has_rain:
                 df_rain_filtered = df_rain[(df_rain[r_time_col] >= start_dt) & (df_rain[r_time_col] <= end_dt)]
                 if not df_rain_filtered.empty:
                     fig.add_trace(
                         go.Bar(x=df_rain_filtered[r_time_col], y=df_rain_filtered[r_val_col], 
-                               name="降雨量", marker_color="rgba(0, 191, 255, 0.5)"),
-                        secondary_y=True
+                               name="降雨量 (mm)", marker_color="rgba(0, 150, 255, 0.7)"),
+                        row=2, col=1
                     )
+                    # 降雨量圖通常希望 Y 軸由大到小（從上往下長），呈現雨勢落下感
+                    fig.update_yaxes(title_text="降雨量 (mm)", autorange="reversed", row=2, col=1)
             
             fig.update_layout(
                 template="plotly_white", 
                 hovermode="x unified",
+                height=600 if has_rain else 400,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
-            fig.update_yaxes(title_text="水位 (m)", secondary_y=False)
-            fig.update_yaxes(title_text="降雨量 (mm)", autorange="reversed", showgrid=False, secondary_y=True)
+            fig.update_yaxes(title_text="水位 (m)", row=1, col=1)
             
             st.plotly_chart(fig, use_container_width=True)
 else:
