@@ -6,7 +6,7 @@ import re
 
 st.set_page_config(page_title="地下水位與降雨分析工具", page_icon="💧", layout="wide")
 st.title("💧 地下水位升降與颱風降雨分析工具")
-st.write("上傳水位與降雨資料，支援上下雙圖對照、降雨量朝上顯示、自訂颱風事件標註與「固定縱軸數值」功能。")
+st.write("上傳水位與降雨資料，支援上下雙圖對照、降雨量朝上顯示、事件標註自動對應顯示當下水位與雨量數值。")
 
 @st.cache_data
 def load_and_clean_water(file):
@@ -96,18 +96,25 @@ if uploaded_file:
     start_dt = pd.to_datetime(f"{start_date} {start_time}")
     end_dt = pd.to_datetime(f"{end_date} {end_time}")
 
-    # --- 新增功能：手動自訂縱軸範圍設定 ---
+    # --- 縱軸範圍設定 (水位與雨量) ---
     st.sidebar.markdown("---")
     st.sidebar.header("⚙️ 3. 圖表縱軸 (Y 軸) 範圍設定")
-    use_manual_y = st.sidebar.checkbox("手動固定縱軸數值", value=False)
     
+    use_manual_y = st.sidebar.checkbox("手動固定【水位】縱軸數值", value=False)
     manual_y_min, manual_y_max = 0.0, 0.0
     if use_manual_y:
-        # 計算目前全資料的極值作為預設建議範圍
         suggest_min = float(df[water_col].min() - 1)
         suggest_max = float(df[water_col].max() + 1)
-        manual_y_min = st.sidebar.number_input("縱軸最小值 (Y min)", value=suggest_min, format="%.3f")
-        manual_y_max = st.sidebar.number_input("縱軸最大值 (Y max)", value=suggest_max, format="%.3f")
+        manual_y_min = st.sidebar.number_input("水位最小值 (Y min)", value=suggest_min, format="%.3f")
+        manual_y_max = st.sidebar.number_input("水位最大值 (Y max)", value=suggest_max, format="%.3f")
+
+    use_manual_rain_y = False
+    manual_rain_max = 500.0
+    if df_rain is not None and not df_rain.empty:
+        use_manual_rain_y = st.sidebar.checkbox("手動固定【雨量】縱軸數值", value=False)
+        if use_manual_rain_y:
+            suggest_rain_max = float(df_rain[r_val_col].max() * 1.2) if not df_rain[r_val_col].empty else 500.0
+            manual_rain_max = st.sidebar.number_input("雨量最大值 (Rain Y max)", value=suggest_rain_max, format="%.1f")
 
     st.sidebar.markdown("---")
     st.sidebar.header("📌 4. 颱風事件標註設定")
@@ -174,14 +181,33 @@ if uploaded_file:
                 if not df_rain_filtered.empty:
                     fig.add_trace(
                         go.Bar(x=df_rain_filtered[r_time_col], y=df_rain_filtered[r_val_col], 
-                               name="降雨量 (mm)", marker_color="rgba(0, 150, 255, 0.7)"),
+                               name="降雨量 (mm)", marker_color="#0044cc"),
                         row=2, col=1
                     )
-                    fig.update_yaxes(title_text="降雨量 (mm)", row=2, col=1)
+                    if use_manual_rain_y:
+                        fig.update_yaxes(title_text="降雨量 (mm)", range=[0, manual_rain_max], row=2, col=1)
+                    else:
+                        fig.update_yaxes(title_text="降雨量 (mm)", autorange=True, row=2, col=1)
             
-            # 加入颱風事件垂直標註線與文字
+            # 自動計算並在圖面上標註當下水位與雨量數值
             for ev_name, ev_dt in custom_events:
                 if start_dt <= ev_dt <= end_dt:
+                    # 尋找水位資料中最接近該事件時間的數值
+                    water_val_str = "N/A"
+                    if not df.empty:
+                        closest_w_idx = (df[time_col] - ev_dt).abs().idxmin()
+                        water_val_str = f"{df.loc[closest_w_idx, water_col]:.3f} m"
+                    
+                    # 尋找雨量資料中最接近該事件時間的數值
+                    rain_val_str = "N/A"
+                    if has_rain and not df_rain.empty:
+                        closest_r_idx = (df_rain[r_time_col] - ev_dt).abs().idxmin()
+                        rain_val_str = f"{df_rain.loc[closest_r_idx, r_val_col]:.1f} mm"
+                    
+                    # 組合標註文字
+                    label_text = f"<b>{ev_name}</b><br>水位: {water_val_str}<br>雨量: {rain_val_str}"
+
+                    # 畫垂直線
                     fig.add_vline(
                         x=ev_dt, 
                         line_width=1.5, 
@@ -189,14 +215,15 @@ if uploaded_file:
                         line_color="red",
                         row="all", col=1
                     )
+                    # 加上詳細數值的文字標籤
                     fig.add_annotation(
                         x=ev_dt,
                         y=1.0,
                         yref="paper",
-                        text=ev_name,
+                        text=label_text,
                         showarrow=False,
                         textangle=-90,
-                        font=dict(size=12, color="red"),
+                        font=dict(size=11, color="red"),
                         xanchor="left",
                         yanchor="top"
                     )
@@ -208,7 +235,6 @@ if uploaded_file:
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
             
-            # 根據使用者是否勾選「手動固定縱軸」來設定 Y 軸範圍
             if use_manual_y:
                 fig.update_yaxes(title_text="水位 (m)", range=[manual_y_min, manual_y_max], row=1, col=1)
             else:
