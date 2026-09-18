@@ -3,11 +3,10 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import re
-from datetime import datetime
 
 st.set_page_config(page_title="地下水位與降雨分析工具", page_icon="💧", layout="wide")
 st.title("💧 地下水位升降與颱風降雨分析工具")
-st.write("上傳水位與降雨資料，支援上下雙圖對照、降雨量朝上顯示，並可自訂颱風事件標註。")
+st.write("上傳水位與降雨資料，支援上下雙圖對照、降雨量朝上顯示、自訂颱風事件標註與圖面防變形機制。")
 
 @st.cache_data
 def load_and_clean_water(file):
@@ -67,7 +66,6 @@ if uploaded_file:
         st.error("⚠️ 水位檔案中的日期或數值無法解析，請檢查 CSV 格式。")
         st.stop()
         
-    # 計算全期歷史極值
     max_idx = df[water_col].idxmax()
     min_idx = df[water_col].idxmin()
     max_time, max_val = df.loc[max_idx, time_col], df.loc[max_idx, water_col]
@@ -98,12 +96,8 @@ if uploaded_file:
     start_dt = pd.to_datetime(f"{start_date} {start_time}")
     end_dt = pd.to_datetime(f"{end_date} {end_time}")
 
-    # --- 新增功能：側邊欄自訂颱風事件標註 ---
     st.sidebar.markdown("---")
     st.sidebar.header("📌 3. 颱風事件標註設定")
-    st.sidebar.write("輸入事件名稱與發生日期，即可在圖表上畫出垂直標註線：")
-    
-    # 預設幾個常用範例供參考
     default_events = "凱米颱風, 2024-07-24\n康芮颱風, 2024-10-31"
     events_input = st.sidebar.text_area("事件清單 (格式：名稱, YYYY-MM-DD)", value=default_events, height=100)
     
@@ -131,15 +125,16 @@ if uploaded_file:
             first_record, last_record = df_filtered.iloc[0], df_filtered.iloc[-1]
             level_start, level_end = first_record[water_col], last_record[water_col]
             level_diff = level_end - level_start
-            time_diff_hours = (last_record[time_col] - first_record[time_col]).total_seconds() / 3600
-            rate = level_diff / time_diff_hours if time_diff_hours > 0 else 0
+            
+            time_diff_days = (last_record[time_col] - first_record[time_col]).total_seconds() / (24 * 3600)
+            rate = level_diff / time_diff_days if time_diff_days > 0 else 0
             
             st.markdown("### 📊 事件區間計算結果")
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("事件初始水位", f"{level_start:.3f}")
             col2.metric("事件結束水位", f"{level_end:.3f}")
-            col3.metric("🔺 補注幅度" if level_diff > 0 else "🔻 洩降幅度", f"{level_diff:.3f}")
-            col4.metric("平均速率 (每小時)", f"{rate:.4f}")
+            col3.metric("🔺 水位上升幅度" if level_diff > 0 else "🔻 洩降幅度", f"{level_diff:.3f}")
+            col4.metric("平均速率 (m/day)", f"{rate:.4f}")
 
             st.markdown("### 📈 水位與降雨事件歷線圖")
             
@@ -160,7 +155,7 @@ if uploaded_file:
                 row=1, col=1
             )
             
-            # 下圖：降雨量長條圖 (修正為正向朝上)
+            # 下圖：降雨量長條圖
             if has_rain:
                 df_rain_filtered = df_rain[(df_rain[r_time_col] >= start_dt) & (df_rain[r_time_col] <= end_dt)]
                 if not df_rain_filtered.empty:
@@ -169,8 +164,8 @@ if uploaded_file:
                                name="降雨量 (mm)", marker_color="rgba(0, 150, 255, 0.7)"),
                         row=2, col=1
                     )
-                    # 降雨量維持正常正向 Y 軸（由 0 往上增加）
-                    fig.update_yaxes(title_text="降雨量 (mm)", row=2, col=1)
+                    # 啟用自動縮放，避免縮小後變形
+                    fig.update_yaxes(title_text="降雨量 (mm)", autorange=True, row=2, col=1)
             
             # 加入颱風事件垂直標註線與文字
             for ev_name, ev_dt in custom_events:
@@ -200,8 +195,10 @@ if uploaded_file:
                 height=650 if has_rain else 450,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
-            fig.update_yaxes(title_text="水位 (m)", row=1, col=1)
+            # 啟用水位 Y 軸自動縮放 (autorange=True)，解決放大縮小變形問題
+            fig.update_yaxes(title_text="水位 (m)", autorange=True, row=1, col=1)
             
-            st.plotly_chart(fig, use_container_width=True)
+            # 設定 config 確保雙擊重置時能完美恢復預設比例
+            st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
 else:
     st.info("👈 請先由左側面板上傳 CSV 檔案。")
