@@ -1,51 +1,69 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import re
 
-st.set_page_config(page_title="地下水位分析工具", page_icon="💧", layout="wide")
-st.title("💧 地下水位升降與洩降速率分析工具")
-st.write("請上傳 HOBO 水位紀錄器匯出的 CSV 檔案，設定時間區間，系統將自動計算水位變化並繪製歷線圖。")
+st.set_page_config(page_title="地下水位與降雨分析工具", page_icon="💧", layout="wide")
+st.title("💧 地下水位升降與颱風降雨分析工具")
+st.write("上傳 HOBO 水位紀錄器資料，並可選配「降雨量」資料進行疊圖，輕鬆分析颱風事件的洩降與補注反應。")
 
 @st.cache_data
 def load_and_clean_data(file):
     df = pd.read_csv(file)
-    time_col, water_col = df.columns[0], df.columns[1]
+    time_col, val_col = df.columns[0], df.columns[1]
     
-    # 清理 CSV 尾部可能出現的亂碼
     def clean_time(t):
         t = str(t)
-        # 關鍵修復：先將代表時、分的亂碼直接替換為冒號，秒數亂碼則消除
         t = t.replace('®É', ':').replace('¤À', ':').replace('¬í', '')
         t = t.replace('時', ':').replace('分', ':').replace('秒', '')
-        
-        # 移除非時間相關字元
         cleaned = re.sub(r'[^\d/\-\: ]', ' ', t)
         return re.sub(r'\s+', ' ', cleaned).strip()
 
     df[time_col] = df[time_col].apply(clean_time)
     df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
-    df[water_col] = pd.to_numeric(df[water_col], errors='coerce')
+    df[val_col] = pd.to_numeric(df[val_col], errors='coerce')
     
-    # 移除空值並排序
-    return df.dropna(subset=[time_col, water_col]).sort_values(by=time_col).reset_index(drop=True), time_col, water_col
+    return df.dropna(subset=[time_col, val_col]).sort_values(by=time_col).reset_index(drop=True), time_col, val_col
 
+# --- 側邊欄：資料上傳 ---
 st.sidebar.header("📁 1. 資料上傳")
-uploaded_file = st.sidebar.file_uploader("上傳地下水位 CSV 檔", type=["csv"])
+uploaded_file = st.sidebar.file_uploader("上傳地下水位 CSV 檔 (必填)", type=["csv"])
+uploaded_rain = st.sidebar.file_uploader("上傳降雨量 CSV 檔 (選配)", type=["csv"], help="請確保第一欄為時間，第二欄為降雨量")
 
 if uploaded_file:
-    with st.spinner("正在解析與清理資料..."):
+    with st.spinner("正在解析水位資料..."):
         df, time_col, water_col = load_and_clean_data(uploaded_file)
     
-    # 增加安全防呆機制：若資料全數無法解析，停止執行並友善提示
     if df.empty:
-        st.error("⚠️ 檔案中的日期或水位無法成功解析，請檢查 CSV 內容格式是否正確。")
+        st.error("⚠️ 水位檔案中的日期或數值無法解析，請檢查 CSV 格式。")
         st.stop()
+        
+    # --- 新增功能：歷年最高與最低水位 ---
+    max_idx = df[water_col].idxmax()
+    min_idx = df[water_col].idxmin()
+    max_time, max_val = df.loc[max_idx, time_col], df.loc[max_idx, water_col]
+    min_time, min_val = df.loc[min_idx, time_col], df.loc[min_idx, water_col]
+    
+    st.info(f"🏆 **全期歷史極值紀錄**：\n"
+            f"- **最高水位**：{max_val:.3f} (發生於 {max_time.strftime('%Y-%m-%d %H:%M')})\n"
+            f"- **最低水位**：{min_val:.3f} (發生於 {min_time.strftime('%Y-%m-%d %H:%M')})")
         
     min_date, max_date = df[time_col].min(), df[time_col].max()
     
+    # 若有上傳雨量資料，一併讀取
+    df_rain = None
+    if uploaded_rain:
+        with st.spinner("正在解析降雨資料..."):
+            df_rain, r_time_col, r_val_col = load_and_clean_data(uploaded_rain)
+            # 調整時間區間以涵蓋雨量與水位
+            if not df_rain.empty:
+                min_date = min(min_date, df_rain[r_time_col].min())
+                max_date = max(max_date, df_rain[r_time_col].max())
+
     st.sidebar.markdown("---")
-    st.sidebar.header("⏱️ 2. 分析區間設定")
+    st.sidebar.header("⏱️ 2. 颱風/事件區間設定")
+    st.sidebar.write("請設定您想觀察的事件時間範圍：")
     start_date = st.sidebar.date_input("開始日期", min_date.date(), min_value=min_date.date(), max_value=max_date.date())
     start_time = st.sidebar.time_input("開始時間", min_date.time())
     end_date = st.sidebar.date_input("結束日期", max_date.date(), min_value=min_date.date(), max_value=max_date.date())
@@ -60,7 +78,7 @@ if uploaded_file:
         df_filtered = df[(df[time_col] >= start_dt) & (df[time_col] <= end_dt)]
         
         if df_filtered.empty:
-            st.warning("⚠️ 在您選擇的時間區間內找不到資料。")
+            st.warning("⚠️ 在您選擇的時間區間內找不到水位資料。")
         else:
             first_record, last_record = df_filtered.iloc[0], df_filtered.iloc[-1]
             level_start, level_end = first_record[water_col], last_record[water_col]
@@ -68,16 +86,45 @@ if uploaded_file:
             time_diff_hours = (last_record[time_col] - first_record[time_col]).total_seconds() / 3600
             rate = level_diff / time_diff_hours if time_diff_hours > 0 else 0
             
-            st.markdown("### 📊 分析結果指標")
+            st.markdown("### 📊 事件區間計算結果")
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("區間初始水位", f"{level_start:.3f}")
-            col2.metric("區間結束水位", f"{level_end:.3f}")
-            col3.metric("🔺 升降幅度" if level_diff > 0 else "🔻 洩降幅度", f"{level_diff:.3f}")
+            col1.metric("事件初始水位", f"{level_start:.3f}")
+            col2.metric("事件結束水位", f"{level_end:.3f}")
+            col3.metric("🔺 補注幅度" if level_diff > 0 else "🔻 洩降幅度", f"{level_diff:.3f}")
             col4.metric("平均速率 (每小時)", f"{rate:.4f}")
 
-            st.markdown("### 📈 水位變化歷線圖")
-            fig = px.line(df_filtered, x=time_col, y=water_col, template="plotly_white")
-            fig.update_traces(line=dict(color="#1f77b4", width=2))
+            st.markdown("### 📈 水位與降雨事件歷線圖")
+            
+            # --- 新增功能：雙 Y 軸互動圖表 ---
+            # 建立雙 Y 軸圖表 (右側為雨量，倒轉顯示)
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            
+            # 加入水位線 (主 Y 軸)
+            fig.add_trace(
+                go.Scatter(x=df_filtered[time_col], y=df_filtered[water_col], 
+                           mode='lines', name="地下水位", line=dict(color="#1f77b4", width=2)),
+                secondary_y=False
+            )
+            
+            # 加入降雨量長條圖 (副 Y 軸)
+            if df_rain is not None and not df_rain.empty:
+                df_rain_filtered = df_rain[(df_rain[r_time_col] >= start_dt) & (df_rain[r_time_col] <= end_dt)]
+                if not df_rain_filtered.empty:
+                    fig.add_trace(
+                        go.Bar(x=df_rain_filtered[r_time_col], y=df_rain_filtered[r_val_col], 
+                               name="降雨量", marker_color="rgba(0, 191, 255, 0.5)"),
+                        secondary_y=True
+                    )
+            
+            # 設定圖表樣式與倒轉降雨量 Y 軸
+            fig.update_layout(
+                template="plotly_white", 
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            fig.update_yaxes(title_text="水位 (m)", secondary_y=False)
+            fig.update_yaxes(title_text="降雨量 (mm)", autorange="reversed", showgrid=False, secondary_y=True)
+            
             st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("👈 請先由左側面板上傳 CSV 檔案。")
