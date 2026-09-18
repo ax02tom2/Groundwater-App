@@ -6,7 +6,7 @@ import re
 
 st.set_page_config(page_title="地下水位與降雨分析工具", page_icon="💧", layout="wide")
 st.title("💧 地下水位升降與颱風降雨分析工具")
-st.write("上傳水位與降雨資料，支援上下雙圖對照、降雨量朝上顯示、自訂颱風事件標註與圖面防變形機制。")
+st.write("上傳水位與降雨資料，支援上下雙圖對照、降雨量朝上顯示、自訂颱風事件標註與「固定縱軸數值」功能。")
 
 @st.cache_data
 def load_and_clean_water(file):
@@ -96,8 +96,21 @@ if uploaded_file:
     start_dt = pd.to_datetime(f"{start_date} {start_time}")
     end_dt = pd.to_datetime(f"{end_date} {end_time}")
 
+    # --- 新增功能：手動自訂縱軸範圍設定 ---
     st.sidebar.markdown("---")
-    st.sidebar.header("📌 3. 颱風事件標註設定")
+    st.sidebar.header("⚙️ 3. 圖表縱軸 (Y 軸) 範圍設定")
+    use_manual_y = st.sidebar.checkbox("手動固定縱軸數值", value=False)
+    
+    manual_y_min, manual_y_max = 0.0, 0.0
+    if use_manual_y:
+        # 計算目前全資料的極值作為預設建議範圍
+        suggest_min = float(df[water_col].min() - 1)
+        suggest_max = float(df[water_col].max() + 1)
+        manual_y_min = st.sidebar.number_input("縱軸最小值 (Y min)", value=suggest_min, format="%.3f")
+        manual_y_max = st.sidebar.number_input("縱軸最大值 (Y max)", value=suggest_max, format="%.3f")
+
+    st.sidebar.markdown("---")
+    st.sidebar.header("📌 4. 颱風事件標註設定")
     default_events = "凱米颱風, 2024-07-24\n康芮颱風, 2024-10-31"
     events_input = st.sidebar.text_area("事件清單 (格式：名稱, YYYY-MM-DD)", value=default_events, height=100)
     
@@ -164,8 +177,7 @@ if uploaded_file:
                                name="降雨量 (mm)", marker_color="rgba(0, 150, 255, 0.7)"),
                         row=2, col=1
                     )
-                    # 啟用自動縮放，避免縮小後變形
-                    fig.update_yaxes(title_text="降雨量 (mm)", autorange=True, row=2, col=1)
+                    fig.update_yaxes(title_text="降雨量 (mm)", row=2, col=1)
             
             # 加入颱風事件垂直標註線與文字
             for ev_name, ev_dt in custom_events:
@@ -195,10 +207,13 @@ if uploaded_file:
                 height=650 if has_rain else 450,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
-            # 啟用水位 Y 軸自動縮放 (autorange=True)，解決放大縮小變形問題
-            fig.update_yaxes(title_text="水位 (m)", autorange=True, row=1, col=1)
             
-            # 設定 config 確保雙擊重置時能完美恢復預設比例
+            # 根據使用者是否勾選「手動固定縱軸」來設定 Y 軸範圍
+            if use_manual_y:
+                fig.update_yaxes(title_text="水位 (m)", range=[manual_y_min, manual_y_max], row=1, col=1)
+            else:
+                fig.update_yaxes(title_text="水位 (m)", autorange=True, row=1, col=1)
+            
             st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
 else:
     st.info("👈 請先由左側面板上傳 CSV 檔案。")
