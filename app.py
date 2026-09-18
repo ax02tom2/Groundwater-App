@@ -10,11 +10,10 @@ st.write("上傳水位紀錄器資料，並可選配「降雨量」資料進行�
 
 @st.cache_data
 def load_and_clean_data(file):
-    # 🌟 關鍵修復：智慧判斷檔案編碼 (UTF-8 失敗時自動轉為 Big5)
+    # 智慧判斷檔案編碼 (UTF-8 失敗時自動轉為 Big5)
     try:
         df = pd.read_csv(file, encoding='utf-8')
     except UnicodeDecodeError:
-        # 讀取失敗時，將檔案指標退回原點，改用 Big5 讀取
         file.seek(0)
         try:
             df = pd.read_csv(file, encoding='big5')
@@ -26,13 +25,15 @@ def load_and_clean_data(file):
     
     def clean_time(t):
         t = str(t)
+        # 完整對應各類亂碼與中文時間字元
         t = t.replace('®É', ':').replace('¤À', ':').replace('¬í', '')
         t = t.replace('時', ':').replace('分', ':').replace('秒', '')
         cleaned = re.sub(r'[^\d/\-\: ]', ' ', t)
         return re.sub(r'\s+', ' ', cleaned).strip()
 
     df[time_col] = df[time_col].apply(clean_time)
-    df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
+    # 升級時間解析，支援混合格式與中文時間轉譯
+    df[time_col] = pd.to_datetime(df[time_col], errors='coerce', format='mixed')
     df[val_col] = pd.to_numeric(df[val_col], errors='coerce')
     
     return df.dropna(subset=[time_col, val_col]).sort_values(by=time_col).reset_index(drop=True), time_col, val_col
@@ -50,6 +51,7 @@ if uploaded_file:
         st.error("⚠️ 水位檔案中的日期或數值無法解析，請檢查 CSV 格式。")
         st.stop()
         
+    # 計算全期歷史極值
     max_idx = df[water_col].idxmax()
     min_idx = df[water_col].idxmin()
     max_time, max_val = df.loc[max_idx, time_col], df.loc[max_idx, water_col]
@@ -86,7 +88,7 @@ if uploaded_file:
         df_filtered = df[(df[time_col] >= start_dt) & (df[time_col] <= end_dt)]
         
         if df_filtered.empty:
-            st.warning("⚠️ 在您選擇的時間區間內找不到水位資料。")
+            st.warning("⚠️ 在您選擇的時間區間內找不到水位資料，請重新調整篩選範圍。")
         else:
             first_record, last_record = df_filtered.iloc[0], df_filtered.iloc[-1]
             level_start, level_end = first_record[water_col], last_record[water_col]
