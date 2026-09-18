@@ -6,7 +6,7 @@ import re
 
 st.set_page_config(page_title="地下水位與降雨分析工具", page_icon="💧", layout="wide")
 st.title("💧 地下水位升降與颱風降雨分析工具")
-st.write("上傳水位與降雨資料，支援上下雙圖對照、降雨量朝上顯示、事件標註自動對應顯示當下水位與雨量數值。")
+st.write("上傳水位與降雨資料，支援上下雙圖同步聯動懸停顯示水位與雨量、自訂事件標註與雙 Y 軸範圍固定功能。")
 
 @st.cache_data
 def load_and_clean_water(file):
@@ -170,8 +170,14 @@ if uploaded_file:
             
             # 上圖：地下水位折線圖
             fig.add_trace(
-                go.Scatter(x=df_filtered[time_col], y=df_filtered[water_col], 
-                           mode='lines', name="地下水位", line=dict(color="#1f77b4", width=2)),
+                go.Scatter(
+                    x=df_filtered[time_col], 
+                    y=df_filtered[water_col], 
+                    mode='lines', 
+                    name="地下水位", 
+                    line=dict(color="#1f77b4", width=2),
+                    hovertemplate="水位: %{y:.3f} m<extra></extra>"
+                ),
                 row=1, col=1
             )
             
@@ -180,8 +186,13 @@ if uploaded_file:
                 df_rain_filtered = df_rain[(df_rain[r_time_col] >= start_dt) & (df_rain[r_time_col] <= end_dt)]
                 if not df_rain_filtered.empty:
                     fig.add_trace(
-                        go.Bar(x=df_rain_filtered[r_time_col], y=df_rain_filtered[r_val_col], 
-                               name="降雨量 (mm)", marker_color="#0044cc"),
+                        go.Bar(
+                            x=df_rain_filtered[r_time_col], 
+                            y=df_rain_filtered[r_val_col], 
+                            name="降雨量", 
+                            marker_color="#0044cc",
+                            hovertemplate="降雨量: %{y:.1f} mm<extra></extra>"
+                        ),
                         row=2, col=1
                     )
                     if use_manual_rain_y:
@@ -192,22 +203,18 @@ if uploaded_file:
             # 自動計算並在圖面上標註當下水位與雨量數值
             for ev_name, ev_dt in custom_events:
                 if start_dt <= ev_dt <= end_dt:
-                    # 尋找水位資料中最接近該事件時間的數值
                     water_val_str = "N/A"
                     if not df.empty:
                         closest_w_idx = (df[time_col] - ev_dt).abs().idxmin()
                         water_val_str = f"{df.loc[closest_w_idx, water_col]:.3f} m"
                     
-                    # 尋找雨量資料中最接近該事件時間的數值
                     rain_val_str = "N/A"
                     if has_rain and not df_rain.empty:
                         closest_r_idx = (df_rain[r_time_col] - ev_dt).abs().idxmin()
                         rain_val_str = f"{df_rain.loc[closest_r_idx, r_val_col]:.1f} mm"
                     
-                    # 組合標註文字
                     label_text = f"<b>{ev_name}</b><br>水位: {water_val_str}<br>雨量: {rain_val_str}"
 
-                    # 畫垂直線
                     fig.add_vline(
                         x=ev_dt, 
                         line_width=1.5, 
@@ -215,7 +222,6 @@ if uploaded_file:
                         line_color="red",
                         row="all", col=1
                     )
-                    # 加上詳細數值的文字標籤
                     fig.add_annotation(
                         x=ev_dt,
                         y=1.0,
@@ -228,6 +234,7 @@ if uploaded_file:
                         yanchor="top"
                     )
 
+            # 🌟 關鍵設定：hovermode 設為 'x unified'，讓上下兩圖的滑鼠懸停資訊完美同步整合
             fig.update_layout(
                 template="plotly_white", 
                 hovermode="x unified",
