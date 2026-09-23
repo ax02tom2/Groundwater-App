@@ -286,6 +286,11 @@ if uploaded_file:
           "⚠️ 在您選擇的時間區間內找不到水位資料，請重新調整篩選範圍。"
       )
     else:
+      # 將時間轉換為乾淨的數字字串格式，用來取代英文的 hover 標題
+      df_filtered["time_str"] = df_filtered[time_col].dt.strftime(
+          "%Y-%m-%d %H:%M"
+      )
+
       first_record, last_record = df_filtered.iloc[0], df_filtered.iloc[-1]
       level_start, level_end = first_record[water_col], last_record[water_col]
       level_diff = level_end - level_start
@@ -332,10 +337,10 @@ if uploaded_file:
       else:
         rain_hover_vals = [0.0] * len(df_filtered)
 
-      # 上圖：地下水位折線圖（統一時間顯示格式為 %Y-%m-%d %H:%M）
+      # 上圖：地下水位折線圖（以 time_str 作為 x 軸，讓 hover 標題直接顯示數字時間）
       fig.add_trace(
           go.Scatter(
-              x=df_filtered[time_col],
+              x=df_filtered["time_str"],
               y=df_filtered[water_col],
               mode="lines",
               name="地下水位"
@@ -343,11 +348,10 @@ if uploaded_file:
               line=dict(color="#1f77b4", width=2),
               customdata=rain_hover_vals,
               hovertemplate=(
-                  f"時間: %{{x|%Y-%m-%d %H:%M}}<br>水位: %{{y:.3f}}"
-                  f" m<br>{selected_rain_col}:"
+                  f"水位: %{{y:.3f}} m<br>{selected_rain_col}:"
                   " %{customdata:.1f} mm<extra></extra>"
                   if has_rain
-                  else "時間: %{x|%Y-%m-%d %H:%M}<br>水位: %{y:.3f} m<extra></extra>"
+                  else "水位: %{y:.3f} m<extra></extra>"
               ),
           ),
           row=1,
@@ -359,17 +363,19 @@ if uploaded_file:
         df_rain_filtered = df_rain[
             (df_rain[r_time_col] >= start_dt)
             & (df_rain[r_time_col] <= end_dt)
-        ]
+        ].copy()
         if not df_rain_filtered.empty:
+          df_rain_filtered["time_str"] = df_rain_filtered[r_time_col].dt.strftime(
+              "%Y-%m-%d %H:%M"
+          )
           fig.add_trace(
               go.Bar(
-                  x=df_rain_filtered[r_time_col],
+                  x=df_rain_filtered["time_str"],
                   y=df_rain_filtered[selected_rain_col],
                   name=selected_rain_col,
                   marker_color="#0044cc",
                   hovertemplate=(
-                      f"時間: %{{x|%Y-%m-%d %H:%M}}<br>{selected_rain_col}:"
-                      " %{y:.1f} mm<extra></extra>"
+                      f"{selected_rain_col}: %{{y:.1f}} mm<extra></extra>"
                   ),
               ),
               row=2,
@@ -410,8 +416,10 @@ if uploaded_file:
               f" {rain_val_str}"
           )
 
+          # 轉換事件時間為字串以對齊 x 軸
+          ev_str = ev_dt.strftime("%Y-%m-%d %H:%M")
           fig.add_vline(
-              x=ev_dt,
+              x=ev_str,
               line_width=1.5,
               line_dash="dash",
               line_color="red",
@@ -419,7 +427,7 @@ if uploaded_file:
               col=1,
           )
           fig.add_annotation(
-              x=ev_dt,
+              x=ev_str,
               y=1.0,
               yref="paper",
               text=label_text,
