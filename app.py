@@ -246,37 +246,6 @@ if uploaded_file:
           "雨量最大值 (Rain Y max)", value=suggest_rain_max, format="%.2f"
       )
 
-  # --- 效能優化 ---
-  st.sidebar.markdown("---")
-  st.sidebar.header("⚡ 效能與圖表優化 (選配)")
-  total_rows = len(df)
-  enable_downsample = False
-  resample_freq = "1H"
-
-  if total_rows > 5000:
-    st.sidebar.warning(
-        f"⚠️ 偵測到水位資料筆數較多 ({total_rows:,} 筆)，若操作卡頓可勾選下方降採樣功能。"
-    )
-    enable_downsample = st.sidebar.checkbox(
-        "啟用資料降採樣（平均取樣）", value=False
-    )
-  else:
-    enable_downsample = st.sidebar.checkbox(
-        "啟用資料降採樣（平均取樣）", value=False
-    )
-
-  if enable_downsample:
-    freq_option = st.sidebar.selectbox(
-        "降採樣頻率", ["15分鐘 (15T)", "1小時 (1H)", "6小時 (6H)", "每日 (1D)"], index=1
-    )
-    freq_map = {
-        "15分鐘 (15T)": "15min",
-        "1小時 (1H)": "H",
-        "6小時 (6H)": "6H",
-        "每日 (1D)": "D",
-    }
-    resample_freq = freq_map[freq_option]
-
   # --- 主畫面區塊 ---
   if start_dt >= end_dt:
     st.error("開始時間必須早於結束時間！")
@@ -292,23 +261,6 @@ if uploaded_file:
             (df_rain[r_time_col] >= start_dt)
             & (df_rain[r_time_col] <= end_dt)
         ].copy()
-
-    if enable_downsample and not df_filtered.empty:
-      df_backup = df_filtered.copy()
-      try:
-          df_filtered = (
-              df_filtered.set_index(time_col)[[water_col]]
-              .resample(resample_freq)
-              .mean(numeric_only=True)
-              .reset_index()
-          )
-          df_filtered = df_filtered.dropna(subset=[water_col])
-          if df_filtered.empty:
-              df_filtered = df_backup
-              st.warning("⚠️ 降採樣後找不到有效資料，已退回使用原始數值繪圖。")
-      except Exception as e:
-          df_filtered = df_backup
-          st.warning(f"⚠️ 降採樣功能發生異常，已退回使用原始資料繪圖。")
 
     if df_filtered.empty:
       st.warning(
@@ -385,8 +337,7 @@ if uploaded_file:
               x=df_filtered[time_col],
               y=df_filtered[water_col],
               mode="lines",
-              name="地下水位"
-              + (" (已降採樣)" if enable_downsample else ""),
+              name="地下水位",
               line=dict(color="#1f77b4", width=2),
               hovertemplate="水位: %{y:.2f} m<extra></extra>"
           ),
