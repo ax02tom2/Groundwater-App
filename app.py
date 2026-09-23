@@ -1,53 +1,580 @@
-from plotly.subplots import make_subplots
+import re
+import numpy as np
+from datetime import datetime
+import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
-# 1. 建立具有雙 Y 軸的圖表基底
-fig_water = make_subplots(specs=[[{"secondary_y": True}]])
-
-# 2. 加入水位折線圖 (對應主 Y 軸：左側)
-fig_water.add_trace(
-    go.Scatter(
-        x=df['時間'],        # 【注意】請確認 df 內的日期時間欄位名稱是否為 '時間'
-        y=df['水位'],        # 【注意】請確認 df 內的水位欄位名稱
-        mode='lines',
-        name='地下水位',
-        line=dict(color='#1f77b4', width=2)
-    ),
-    secondary_y=False,
+st.set_page_config(
+    page_title="地下水位與降雨分析工具", page_icon="💧", layout="wide"
+)
+st.title("💧 地下水位升降與颱風降雨分析工具")
+st.write(
+    "上傳水位與降雨資料，支援多時段雨量疊加比較、動態速率換算、雙"
+    " Y 軸範圍固定功能，以及對數迴歸相關性分析。"
 )
 
-# 3. 加入降雨量柱狀圖 (對應副 Y 軸：右側)
-fig_water.add_trace(
-    go.Bar(
-        x=df['時間'],        # 【注意】需與上方相同
-        y=df['降雨量'],      # 【注意】請確認 df 內的降雨量欄位名稱
-        name='降雨量',
-        marker_color='#00d2d3',
-        opacity=0.6
-    ),
-    secondary_y=True,
+
+@st.cache_data
+def load_and_clean_water(file):
+  try:
+    df = pd.read_csv(file, encoding="utf-8")
+  except UnicodeDecodeError:
+    file.seek(0)
+    try:
+      df = pd.read_csv(file, encoding="big5")
+    except UnicodeDecodeError:
+      file.seek(0)
+      df = pd.read_csv(file, encoding="cp950", errors="ignore")
+
+  # 移除重複欄位避免 Pandas 誤判
+  df = df.loc[:, ~df.columns.duplicated()]
+  time_col, val_col = df.columns[0], df.columns[1]
+
+  def clean_time(t):
+    t = str(t)
+    t = t.replace("®É", ":").replace("¤À", ":").replace("¬í", "")
+    t = t.replace("時", ":").replace("分", ":").replace("秒", "")
+    cleaned = re.sub(r"[^\d/\-\: ]", " ", t)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+  df[time_col] = df[time_col].apply(clean_time)
+  df[time_col] = pd.to_datetime(df[time_col], errors="coerce", format="mixed")
+  df[val_col] = pd.to_numeric(df[val_col], errors="coerce")
+
+  return (
+      df.dropna(subset=[time_col, val_col])
+      .drop_duplicates(subset=[time_col])
+      .sort_values(by=time_col)
+      .reset_index(drop=True),
+      time_col,
+      val_col,
+  )
+
+
+@st.cache_data
+def load_and_clean_rain(file):
+  try:
+    df = pd.read_csv(file, encoding="utf-8")
+  except UnicodeDecodeError:
+    file.seek(0)
+    try:
+      df = pd.read_csv(file, encoding="big5")
+    except UnicodeDecodeError:
+      file.seek(0)
+      df = pd.read_csv(file, encoding="cp950", errors="ignore")
+
+  # 移除重複欄位避免 Pandas 誤判
+  df = df.loc[:, ~df.columns.duplicated()]
+  time_col = df.columns[0]
+
+  def clean_time(t):
+    t = str(t)
+    t = t.replace("®É", ":").replace("¤À", ":").replace("¬í", "")
+    t = t.replace("時", ":").replace("分", ":").replace("秒", "")
+    cleaned = re.sub(r"[^\d/\-\: ]", " ", t)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+  df[time_col] = df[time_col].apply(clean_time)
+  df[time_col] = pd.to_datetime(df[time_col], errors="coerce", format="mixed")
+
+  rain_cols = list(df.columns[1:])
+  for col in rain_cols:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+  return (
+      df.dropna(subset=[time_col])
+      .drop_duplicates(subset=[time_col])
+      .sort_values(by=time_col)
+      .reset_index(drop=True),
+      time_col,
+      rain_cols,
+  )
+
+
+# --- 側邊欄：資料上傳 ---
+st.sidebar.header("📁 1. 資料上傳")
+uploaded_file = st.sidebar.file_uploader(
+    "上傳地下水位 CSV 檔 (必填)", type=["csv"]
+)
+uploaded_rain = st.sidebar.file_uploader(
+    "上傳降雨量 CSV 檔 (選配)",
+    type=["csv"],
+    help="請確保第一欄為時間，後續欄位為各項雨量數據",
 )
 
-# 4. 更新整體版面與 X 軸設定
-fig_water.update_layout(
-    title="地下水位升降與颱風降雨分析",
-    xaxis_title="時間",
-    template="plotly_white", # 使用乾淨的主題避免深色模式衝突
-    hovermode="x unified",   # 讓滑鼠游標一次顯示水位與降雨量
-    legend=dict(
-        orientation="h", 
-        yanchor="bottom", 
-        y=1.02, 
-        xanchor="right", 
-        x=1
-    ),
-    margin=dict(l=40, r=40, t=60, b=40)
-)
+if uploaded_file:
+  with st.spinner("正在解析水位資料..."):
+    df, time_col, water_col = load_and_clean_water(uploaded_file)
 
-# 5. 分別更新兩個 Y 軸的標籤與翻轉 (降雨量通常由上往下畫)
-fig_water.update_yaxes(title_text="水位 (公尺)", secondary_y=False)
-fig_water.update_yaxes(title_text="降雨量 (mm)", secondary_y=True, autorange="reversed")
+  if df.empty:
+    st.error("⚠️ 水位檔案中的日期或數值無法解析，請檢查 CSV 格式。")
+    st.stop()
 
-# 6. 輸出至 Streamlit
-st.plotly_chart(fig_water, use_container_width=True)
+  max_idx = df[water_col].idxmax()
+  min_idx = df[water_col].idxmin()
+  max_time, max_val = df.loc[max_idx, time_col], df.loc[max_idx, water_col]
+  min_time, min_val = df.loc[min_idx, time_col], df.loc[min_idx, water_col]
+
+  st.info(
+      f"🏆 **全期歷史極值紀錄**：\n"
+      f"- **最高水位**：{max_val:.2f} (發生於"
+      f" {max_time.strftime('%Y-%m-%d %H:%M')})\n"
+      f"- **最低水位**：{min_val:.2f} (發生於"
+      f" {min_time.strftime('%Y-%m-%d %H:%M')})"
+  )
+
+  min_date, max_date = df[time_col].min(), df[time_col].max()
+
+  df_rain = None
+  r_time_col = None
+  r_val_cols = []
+  selected_rain_cols = []
+
+  if uploaded_rain:
+    with st.spinner("正在解析降雨資料..."):
+      df_rain, r_time_col, r_val_cols = load_and_clean_rain(uploaded_rain)
+      if not df_rain.empty:
+        min_date = min(min_date, df_rain[r_time_col].min())
+        max_date = max(max_date, df_rain[r_time_col].max())
+
+  st.sidebar.markdown("---")
+  st.sidebar.header("⏱️ 2. 颱風/事件區間設定")
+  start_date = st.sidebar.date_input(
+      "開始日期",
+      min_date.date(),
+      min_value=min_date.date(),
+      max_value=max_date.date(),
+  )
+  start_time = st.sidebar.time_input("開始時間", min_date.time())
+  end_date = st.sidebar.date_input(
+      "結束日期",
+      max_date.date(),
+      min_value=min_date.date(),
+      max_value=max_date.date(),
+  )
+  end_time = st.sidebar.time_input("結束時間", max_date.time())
+
+  start_dt = pd.to_datetime(f"{start_date} {start_time}")
+  end_dt = pd.to_datetime(f"{end_date} {end_time}")
+
+  st.sidebar.markdown("---")
+  st.sidebar.header("📌 3. 颱風事件標註設定")
+  if "events_df" not in st.session_state:
+    st.session_state.events_df = pd.DataFrame({
+        "事件名稱": ["凱米颱風", "康芮颱風"],
+        "事件日期": ["2024-07-24", "2024-10-31"],
+    })
+
+  edited_events_df = st.sidebar.data_editor(
+      st.session_state.events_df,
+      num_rows="dynamic",
+      key="event_editor_sidebar",
+  )
+  st.session_state.events_df = edited_events_df
+
+  custom_events = []
+  for _, row in edited_events_df.iterrows():
+    ev_name = str(row["事件名稱"]).strip()
+    ev_date_str = str(row["事件日期"]).strip()
+    if ev_name and ev_name != "nan":
+      try:
+        ev_dt = pd.to_datetime(ev_date_str)
+        custom_events.append((ev_name, ev_dt))
+      except:
+        pass
+
+  if df_rain is not None and not df_rain.empty and r_val_cols:
+    st.sidebar.markdown("---")
+    st.sidebar.header("🌧️ 4. 降雨欄位對應選擇 (可複選)")
+    default_names = []
+    for name_pref in ["1小時", "降雨量", "rain", "Rain"]:
+      if name_pref in r_val_cols:
+        default_names = [name_pref]
+        break
+    selected_rain_cols = st.sidebar.multiselect(
+        "選擇要繪圖與分析的雨量欄位", r_val_cols, default=default_names
+    )
+
+  st.sidebar.markdown("---")
+  st.sidebar.header("⚙️ 5. 圖表縱軸 (Y 軸) 範圍設定")
+
+  use_manual_y = st.sidebar.checkbox("手動固定【水位】縱軸數值", value=False)
+  manual_y_min, manual_y_max = 0.0, 0.0
+  if use_manual_y:
+    suggest_min = float(df[water_col].min() - 1)
+    suggest_max = float(df[water_col].max() + 1)
+    manual_y_min = st.sidebar.number_input(
+        "水位最小值 (Y min)", value=suggest_min, format="%.2f"
+    )
+    manual_y_max = st.sidebar.number_input(
+        "水位最大值 (Y max)", value=suggest_max, format="%.2f"
+    )
+
+  use_manual_rain_y = False
+  manual_rain_max = 500.0
+  if (
+      df_rain is not None
+      and not df_rain.empty
+      and len(selected_rain_cols) > 0
+  ):
+    use_manual_rain_y = st.sidebar.checkbox(
+        "手動固定【雨量】縱軸數值", value=False
+    )
+    if use_manual_rain_y:
+      max_val = df_rain[selected_rain_cols].max().max()
+      suggest_rain_max = float(max_val * 1.2) if pd.notna(max_val) else 500.0
+      manual_rain_max = st.sidebar.number_input(
+          "雨量最大值 (Rain Y max)", value=suggest_rain_max, format="%.2f"
+      )
+
+  # --- 效能優化 (移至側邊欄最後，去除編號，預設全部關閉) ---
+  st.sidebar.markdown("---")
+  st.sidebar.header("⚡ 效能與圖表優化 (選填)")
+  total_rows = len(df)
+  enable_downsample = False
+  resample_freq = "1H"
+
+  if total_rows > 5000:
+    st.sidebar.warning(
+        f"⚠️ 偵測到水位資料筆數較多 ({total_rows:,} 筆)，若操作卡頓可勾選下方降採樣功能。"
+    )
+    enable_downsample = st.sidebar.checkbox(
+        "啟用資料降採樣（加速繪圖）", value=False
+    )
+  else:
+    enable_downsample = st.sidebar.checkbox(
+        "啟用資料降採樣（平均取樣）", value=False
+    )
+
+  if enable_downsample:
+    freq_option = st.sidebar.selectbox(
+        "降採樣頻率", ["15分鐘 (15T)", "1小時 (1H)", "6小時 (6H)", "每日 (1D)"], index=1
+    )
+    freq_map = {
+        "15分鐘 (15T)": "15min",
+        "1小時 (1H)": "H",
+        "6小時 (6H)": "6H",
+        "每日 (1D)": "D",
+    }
+    resample_freq = freq_map[freq_option]
+
+  # --- 主畫面區塊 ---
+  if start_dt >= end_dt:
+    st.error("開始時間必須早於結束時間！")
+  else:
+    df_filtered = df[
+        (df[time_col] >= start_dt) & (df[time_col] <= end_dt)
+    ].copy()
+
+    has_rain = df_rain is not None and not df_rain.empty
+    df_rain_filtered = pd.DataFrame()
+    if has_rain:
+        df_rain_filtered = df_rain[
+            (df_rain[r_time_col] >= start_dt)
+            & (df_rain[r_time_col] <= end_dt)
+        ].copy()
+
+    # 安全防護網：即使降採樣發生錯誤，也不會當機，會自動退回原始資料
+    if enable_downsample and not df_filtered.empty:
+      df_backup = df_filtered.copy()
+      try:
+          df_filtered = (
+              df_filtered.set_index(time_col)[[water_col]]
+              .resample(resample_freq)
+              .mean(numeric_only=True)
+              .reset_index()
+          )
+          df_filtered = df_filtered.dropna(subset=[water_col])
+          if df_filtered.empty:
+              df_filtered = df_backup
+              st.warning("⚠️ 降採樣後找不到有效資料，已退回使用原始數值繪圖。")
+      except Exception as e:
+          df_filtered = df_backup
+          st.warning(f"⚠️ 降採樣功能發生異常 ({type(e).__name__})，已退回使用原始資料繪圖。若需協助請提供此訊息：{e}")
+
+    if df_filtered.empty:
+      st.warning(
+          "⚠️ 在您選擇的時間區間內找不到水位資料，請重新調整篩選範圍。"
+      )
+    else:
+      first_record, last_record = df_filtered.iloc[0], df_filtered.iloc[-1]
+      level_start, level_end = first_record[water_col], last_record[water_col]
+      level_diff = level_end - level_start
+
+      time_diff_days = (
+          last_record[time_col] - first_record[time_col]
+      ).total_seconds() / (24 * 3600)
+      
+      rate_day = level_diff / time_diff_days if time_diff_days > 0 else 0
+      trend_word = "上升" if level_diff > 0 else ("洩降" if level_diff < 0 else "變化")
+
+      st.markdown("### 📊 選擇區間之整體計算結果")
+      
+      col1, col2, col3, col4 = st.columns(4)
+      col1.metric("初始水位", f"{level_start:.2f} m")
+      col2.metric("結束水位", f"{level_end:.2f} m")
+      col3.metric(
+          f"🔺 水位{trend_word}幅度",
+          f"{abs(level_diff):.2f} m",
+      )
+      col4.metric(f"區間平均{trend_word}速率 (m/day)", f"{abs(rate_day):.2f}")
+
+      if has_rain and len(selected_rain_cols) > 0 and not df_rain_filtered.empty:
+          st.markdown(f"#### 🌧️ 對應降雨時段之平均{trend_word}速率與極值")
+          r_cols = st.columns(len(selected_rain_cols))
+          
+          for idx, r_col in enumerate(selected_rain_cols):
+              hours = 1
+              match = re.search(r'(\d+)', r_col)
+              if match:
+                  hours = int(match.group(1))
+              elif "日" in r_col or "day" in r_col.lower():
+                  hours = 24
+                  
+              specific_rate = abs(rate_day) * (hours / 24)
+              
+              # 安全取值，避免 DataFrame 重複欄位引發錯誤
+              max_r = df_rain_filtered[r_col].max()
+              if isinstance(max_r, pd.Series):
+                  max_r = max_r.iloc[0]
+                  
+              max_r_val = float(max_r) if pd.notna(max_r) else 0.0
+              
+              r_cols[idx].metric(
+                  label=f"【{r_col}】{trend_word}速率", 
+                  value=f"{specific_rate:.2f} m/{r_col}",
+                  delta=f"區間內最大雨量: {max_r_val:.2f} mm",
+                  delta_color="off"
+              )
+
+      st.markdown("---")
+      st.markdown("### 📈 水位與降雨事件歷線圖")
+
+      rows_count = 2 if has_rain and len(selected_rain_cols) > 0 else 1
+
+      fig = make_subplots(
+          rows=rows_count,
+          cols=1,
+          shared_xaxes=True,
+          vertical_spacing=0.1,
+          row_heights=[0.7, 0.3] if rows_count == 2 else [1.0],
+      )
+
+      fig.add_trace(
+          go.Scatter(
+              x=df_filtered[time_col],
+              y=df_filtered[water_col],
+              mode="lines",
+              name="地下水位"
+              + (" (已降採樣)" if enable_downsample else ""),
+              line=dict(color="#1f77b4", width=2),
+              hovertemplate="水位: %{y:.2f} m<extra></extra>"
+          ),
+          row=1,
+          col=1,
+      )
+
+      if rows_count == 2:
+        bar_colors = ["#1A237E", "#B71C1C", "#1B5E20", "#4A148C", "#E65100", "#004D40"]
+        
+        for idx, r_col in enumerate(selected_rain_cols):
+            c = bar_colors[idx % len(bar_colors)]
+            fig.add_trace(
+                go.Bar(
+                    x=df_rain_filtered[r_time_col],
+                    y=df_rain_filtered[r_col],
+                    name=r_col,
+                    marker=dict(color=c, line=dict(width=0)), 
+                    hovertemplate=f"{r_col}: %{{y:.2f}} mm<extra></extra>"
+                ),
+                row=2,
+                col=1,
+            )
+            
+        fig.update_layout(barmode='group')
+        
+        if use_manual_rain_y:
+          fig.update_yaxes(
+              title_text="雨量 (mm)",
+              range=[0, manual_rain_max],
+              row=2,
+              col=1,
+          )
+        else:
+          fig.update_yaxes(
+              title_text="雨量 (mm)",
+              autorange=True,
+              row=2,
+              col=1,
+          )
+
+      for ev_name, ev_dt in custom_events:
+        if start_dt <= ev_dt <= end_dt:
+          water_val_str = "N/A"
+          if not df.empty:
+            closest_w_idx = (df[time_col] - ev_dt).abs().idxmin()
+            water_val_str = f"{df.loc[closest_w_idx, water_col]:.2f} m"
+
+          rain_strs = []
+          if has_rain and not df_rain.empty and selected_rain_cols:
+            closest_r_idx = (df_rain[r_time_col] - ev_dt).abs().idxmin()
+            for r_col in selected_rain_cols:
+                r_val = df_rain.loc[closest_r_idx, r_col]
+                if isinstance(r_val, pd.Series):
+                    r_val = r_val.iloc[0]
+                if pd.notna(r_val):
+                    rain_strs.append(f"{float(r_val):.2f} mm ({r_col})")
+                    
+          rain_val_str = "<br>      ".join(rain_strs) if rain_strs else "N/A"
+
+          label_text = (
+              f"<b>{ev_name}</b><br>水位: {water_val_str}<br>雨量: {rain_val_str}"
+          )
+
+          fig.add_vline(
+              x=ev_dt,
+              line_width=1.5,
+              line_dash="dash",
+              line_color="red",
+              row="all",
+              col=1,
+          )
+          fig.add_annotation(
+              x=ev_dt,
+              y=1.0,
+              yref="paper",
+              text=label_text,
+              showarrow=False,
+              textangle=-90,
+              font=dict(size=11, color="red"),
+              xanchor="left",
+              yanchor="top",
+          )
+
+      fig.update_xaxes(
+          hoverformat="%Y-%m-%d %H:%M",
+          tickformatstops=[
+              dict(dtickrange=[None, 3600000], value="%m-%d %H:%M"),
+              dict(dtickrange=[3600000, 86400000], value="%m-%d %H:%M"),
+              dict(dtickrange=[86400000, 604800000], value="%Y-%m-%d"),
+              dict(dtickrange=[604800000, "M1"], value="%Y-%m-%d"),
+              dict(dtickrange=["M1", "M12"], value="%Y-%m"),
+              dict(dtickrange=["M12", None], value="%Y")
+          ]
+      )
+
+      fig.update_layout(
+          template="plotly_white",
+          hovermode="x unified",
+          height=650 if rows_count == 2 else 450,
+          legend=dict(
+              orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+          ),
+      )
+
+      if use_manual_y:
+        fig.update_yaxes(
+            title_text="水位 (m)",
+            range=[manual_y_min, manual_y_max],
+            row=1,
+            col=1,
+        )
+      else:
+        fig.update_yaxes(title_text="水位 (m)", autorange=True, row=1, col=1)
+
+      st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
+      
+      # =========================================================
+      # 降雨與水位相關性分析 (對數迴歸散佈圖)
+      # =========================================================
+      if has_rain and len(selected_rain_cols) > 0 and not df_rain_filtered.empty:
+          st.markdown("---")
+          st.markdown("### 🔗 降雨與水位相關性分析 (對數迴歸)")
+          st.write("擷取您選定時間區間內的**每日最大降雨量**與**每日最高水位**進行配對，利用對數函數 ($y = a \cdot \ln(x) + b$) 擬合其相關性。$R^2$ 數值越接近 1，代表兩者相關性越高。")
+          
+          try:
+              # 將資料轉為日極值進行配對 (以日期作為 Merge 基準)
+              df_w_daily = df_filtered.set_index(time_col)[[water_col]].resample('D').max().reset_index()
+              df_r_daily = df_rain_filtered.set_index(r_time_col)[selected_rain_cols].resample('D').max().reset_index()
+              
+              df_w_daily['Date'] = df_w_daily[time_col].dt.date
+              df_r_daily['Date'] = df_r_daily[r_time_col].dt.date
+              
+              df_scatter = pd.merge(df_w_daily, df_r_daily, on='Date', how='inner')
+              
+              # 為每個選取的雨量欄位建立專屬的 Tab
+              tabs = st.tabs([f"📊 {col} 相關性" for col in selected_rain_cols])
+              
+              for idx, r_col in enumerate(selected_rain_cols):
+                  with tabs[idx]:
+                      # 過濾掉降雨量小於等於 0 的無效點 (對數運算需求) 以及缺失值
+                      df_valid = df_scatter[(df_scatter[r_col] > 0) & (df_scatter[water_col].notna())].copy()
+                      
+                      if len(df_valid) > 2:
+                          x_val = df_valid[r_col].values
+                          y_val = df_valid[water_col].values
+                          
+                          # 1. 執行對數迴歸擬合 y = a * ln(x) + b
+                          log_x = np.log(x_val)
+                          a, b = np.polyfit(log_x, y_val, 1)
+                          
+                          # 2. 計算 R-squared (R²) 相似度/決定係數
+                          y_pred = a * log_x + b
+                          ss_res = np.sum((y_val - y_pred)**2)
+                          ss_tot = np.sum((y_val - np.mean(y_val))**2)
+                          r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+                          
+                          # 3. 繪製圖表
+                          fig_scatter = go.Figure()
+                          
+                          # 加入觀測點 (Scatter)
+                          fig_scatter.add_trace(
+                              go.Scatter(
+                                  x=x_val, 
+                                  y=y_val,
+                                  mode='markers',
+                                  name='每日極值觀測點',
+                                  marker=dict(color='#3399FF', size=8, line=dict(color='white', width=1)),
+                                  customdata=df_valid['Date'],
+                                  hovertemplate="日期: %{customdata}<br>雨量: %{x:.2f} mm<br>水位: %{y:.2f} m<extra></extra>"
+                              )
+                          )
+                          
+                          # 加入對數趨勢線
+                          x_trend = np.linspace(min(x_val), max(x_val), 100)
+                          y_trend = a * np.log(x_trend) + b
+                          
+                          fig_scatter.add_trace(
+                              go.Scatter(
+                                  x=x_trend, 
+                                  y=y_trend,
+                                  mode='lines',
+                                  name=f'對數趨勢線 (R² = {r2:.4f})',
+                                  line=dict(color='#0033CC', width=3)
+                              )
+                          )
+                          
+                          # 設定圖表版面
+                          fig_scatter.update_layout(
+                              template='plotly_white',
+                              title=dict(text=f"{r_col} vs 地下水位 (相似度 R² = {r2:.4f})", x=0.5, font=dict(size=20)),
+                              xaxis_title=f"{r_col} (mm)",
+                              yaxis_title="地下水位 (m)",
+                              height=500,
+                              legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                          )
+                          
+                          fig_scatter.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+                          fig_scatter.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+                          
+                          st.plotly_chart(fig_scatter, use_container_width=True)
+                          
+                          st.info(f"💡 **模型解析**：對數方程式為 `y = {a:.4f} * ln(x) + {b:.4f}`。決定係數 $R^2$ 為 **{r2:.4f}**。")
+                      else:
+                          st.warning(f"⚠️ {r_col} 的有效降雨事件點不足，無法進行對數迴歸分析（需有大於 0 mm 的降雨日）。")
+          except Exception as e:
+              st.warning(f"⚠️ 相關性分析運算發生異常，暫無法顯示圖表。錯誤提示：{type(e).__name__} - {e}")
+else:
+  st.info("👈 請先由左側面板上傳 CSV 檔案。")
