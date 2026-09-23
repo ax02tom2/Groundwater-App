@@ -11,7 +11,7 @@ st.set_page_config(
 )
 st.title("💧 地下水位升降與颱風降雨分析工具")
 st.write(
-    "上傳水位與降雨資料，支援大數據降採樣流暢顯示、多時段雨量疊加比較、動態速率換算、雙"
+    "上傳水位與降雨資料，支援多時段雨量疊加比較、動態速率換算、雙"
     " Y 軸範圍固定功能，以及對數迴歸相關性分析。"
 )
 
@@ -155,9 +155,35 @@ if uploaded_file:
   start_dt = pd.to_datetime(f"{start_date} {start_time}")
   end_dt = pd.to_datetime(f"{end_date} {end_time}")
 
+  st.sidebar.markdown("---")
+  st.sidebar.header("📌 3. 颱風事件標註設定")
+  if "events_df" not in st.session_state:
+    st.session_state.events_df = pd.DataFrame({
+        "事件名稱": ["凱米颱風", "康芮颱風"],
+        "事件日期": ["2024-07-24", "2024-10-31"],
+    })
+
+  edited_events_df = st.sidebar.data_editor(
+      st.session_state.events_df,
+      num_rows="dynamic",
+      key="event_editor_sidebar",
+  )
+  st.session_state.events_df = edited_events_df
+
+  custom_events = []
+  for _, row in edited_events_df.iterrows():
+    ev_name = str(row["事件名稱"]).strip()
+    ev_date_str = str(row["事件日期"]).strip()
+    if ev_name and ev_name != "nan":
+      try:
+        ev_dt = pd.to_datetime(ev_date_str)
+        custom_events.append((ev_name, ev_dt))
+      except:
+        pass
+
   if df_rain is not None and not df_rain.empty and r_val_cols:
     st.sidebar.markdown("---")
-    st.sidebar.header("🌧️ 3. 降雨欄位對應選擇 (可複選)")
+    st.sidebar.header("🌧️ 4. 降雨欄位對應選擇 (可複選)")
     default_names = []
     for name_pref in ["1小時", "降雨量", "rain", "Rain"]:
       if name_pref in r_val_cols:
@@ -168,7 +194,7 @@ if uploaded_file:
     )
 
   st.sidebar.markdown("---")
-  st.sidebar.header("⚙️ 4. 圖表縱軸 (Y 軸) 範圍設定")
+  st.sidebar.header("⚙️ 5. 圖表縱軸 (Y 軸) 範圍設定")
 
   use_manual_y = st.sidebar.checkbox("手動固定【水位】縱軸數值", value=False)
   manual_y_min, manual_y_max = 0.0, 0.0
@@ -199,9 +225,9 @@ if uploaded_file:
           "雨量最大值 (Rain Y max)", value=suggest_rain_max, format="%.2f"
       )
 
-  # --- 效能優化與事件標註移至側邊欄最後 ---
+  # --- 效能優化 (移至側邊欄最後，去除編號) ---
   st.sidebar.markdown("---")
-  st.sidebar.header("⚡ 5. 效能與事件優化")
+  st.sidebar.header("⚡ 效能與圖表優化")
   total_rows = len(df)
   enable_downsample = False
   resample_freq = "1H"
@@ -230,31 +256,6 @@ if uploaded_file:
     }
     resample_freq = freq_map[freq_option]
 
-  st.sidebar.markdown("---")
-  if "events_df" not in st.session_state:
-    st.session_state.events_df = pd.DataFrame({
-        "事件名稱": ["凱米颱風", "康芮颱風"],
-        "事件日期": ["2024-07-24", "2024-10-31"],
-    })
-  st.sidebar.write("📌 **自訂颱風/事件標註 (選填)**")
-  edited_events_df = st.sidebar.data_editor(
-      st.session_state.events_df,
-      num_rows="dynamic",
-      key="event_editor_sidebar",
-  )
-  st.session_state.events_df = edited_events_df
-
-  custom_events = []
-  for _, row in edited_events_df.iterrows():
-    ev_name = str(row["事件名稱"]).strip()
-    ev_date_str = str(row["事件日期"]).strip()
-    if ev_name and ev_name != "nan":
-      try:
-        ev_dt = pd.to_datetime(ev_date_str)
-        custom_events.append((ev_name, ev_dt))
-      except:
-        pass
-
   # --- 主畫面區塊 ---
   if start_dt >= end_dt:
     st.error("開始時間必須早於結束時間！")
@@ -271,15 +272,15 @@ if uploaded_file:
             & (df_rain[r_time_col] <= end_dt)
         ].copy()
 
+    # 套用降採樣以優化效能 (修正點：直接取 Series 計算，100% 避免 DataError)
     if enable_downsample and not df_filtered.empty:
-      df_filtered.set_index(time_col, inplace=True)
       df_filtered = (
-          df_filtered[[water_col]]
+          df_filtered.set_index(time_col)[water_col]
           .resample(resample_freq)
           .mean()
           .reset_index()
-          .dropna(subset=[water_col])
       )
+      df_filtered = df_filtered.dropna(subset=[water_col])
 
     if df_filtered.empty:
       st.warning(
@@ -468,7 +469,7 @@ if uploaded_file:
       st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
       
       # =========================================================
-      # 新增功能：降雨與水位相關性分析 (對數迴歸散佈圖)
+      # 降雨與水位相關性分析 (對數迴歸散佈圖)
       # =========================================================
       if has_rain and len(selected_rain_cols) > 0 and not df_rain_filtered.empty:
           st.markdown("---")
@@ -537,7 +538,7 @@ if uploaded_file:
                           )
                       )
                       
-                      # 設定圖表版面 (仿製您提供的截圖風格)
+                      # 設定圖表版面
                       fig_scatter.update_layout(
                           template='plotly_white',
                           title=dict(text=f"{r_col} vs 地下水位 (相似度 R² = {r2:.4f})", x=0.5, font=dict(size=20)),
@@ -556,3 +557,5 @@ if uploaded_file:
                       st.info(f"💡 **模型解析**：對數方程式為 `y = {a:.4f} * ln(x) + {b:.4f}`。決定係數 $R^2$ 為 **{r2:.4f}**。")
                   else:
                       st.warning(f"⚠️ {r_col} 的有效降雨事件點不足，無法進行對數迴歸分析（需有大於 0 mm 的降雨日）。")
+else:
+  st.info("👈 請先由左側面板上傳 CSV 檔案。")
