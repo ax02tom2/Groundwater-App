@@ -11,12 +11,12 @@ st.set_page_config(
 )
 st.title("💧 地下水位升降與颱風降雨分析工具")
 st.write(
-    "支援 CSV 與 Excel 格式上傳（具備智慧欄位掃描與自動降噪），提供彈性欄位對應、多時段雨量比較、動態水位速率換算與對數迴歸相關性分析。"
+    "支援 CSV 與 Excel 格式上傳（具備智慧欄位掃描與自動降噪），提供乾淨的欄位手動選取、動態水位速率換算與對數迴歸相關性分析。"
 )
 
 
 def load_file_flexible(uploaded_file):
-  """超強固的 Excel/CSV 讀取器，自動避開中文說明雜訊列"""
+  """強固型檔案讀取器：支援 CSV 與 Excel (.xlsx/.xls)"""
   file_extension = uploaded_file.name.split(".")[-1].lower()
   
   if file_extension in ["xlsx", "xls"]:
@@ -67,6 +67,9 @@ def load_file_flexible(uploaded_file):
   new_cols = []
   for i, col in enumerate(df.columns):
       col_str = str(col).strip()
+      # 自動判讀 R1 為日雨量
+      if col_str.upper() == "R1":
+          col_str = "R1 (日雨量)"
       if col_str in new_cols or col_str == "" or col_str.lower() == "nan" or "unnamed" in col_str.lower():
           new_cols.append(f"欄位_{i}")
       else:
@@ -148,14 +151,11 @@ if uploaded_rain:
 
     r_time_col = st.sidebar.selectbox("【降雨檔】指定時間欄位", r_all_cols, index=default_r_time_idx)
     
-    default_rain_candidates = [c for c in r_all_cols if c != r_time_col and not c.startswith("欄位_")]
-    if not default_rain_candidates:
-      default_rain_candidates = [c for c in r_all_cols if c != r_time_col]
-
+    # 預設維持空白（不全選），讓使用者自己手動勾選想要的雨量欄位
     selected_rain_cols = st.sidebar.multiselect(
         "【降雨檔】選擇要分析的雨量欄位 (可複選)", 
         r_all_cols, 
-        default=default_rain_candidates
+        default=[] 
     )
 
     def clean_rain_time(t):
@@ -195,7 +195,7 @@ if not water_df.empty and time_col and water_col:
   )
 
   min_date, max_date = water_df[time_col].min(), water_df[time_col].max()
-  if not rain_df.empty and r_time_col:
+  if not rain_df.empty and r_time_col and len(selected_rain_cols) > 0:
     min_date = min(min_date, rain_df[r_time_col].min())
     max_date = max(max_date, rain_df[r_time_col].max())
 
@@ -301,14 +301,14 @@ if not water_df.empty and time_col and water_col:
           r_cols = st.columns(len(selected_rain_cols))
           
           for idx, r_col in enumerate(selected_rain_cols):
-              hours = 1
-              match = re.search(r'(\d+)', r_col)
-              if match:
-                  hours = int(match.group(1))
-              elif "日" in r_col or "day" in r_col.lower():
+              hours = 24  # 預設為日雨量 (R1)
+              if "小時" in r_col or "h" in r_col.lower():
+                  match = re.search(r'(\d+)', r_col)
+                  if match:
+                      hours = int(match.group(1))
+              elif "日" in r_col or "day" in r_col.lower() or "r1" in r_col.lower():
                   hours = 24
                   
-              # 依據降雨時段換算對應的水位升降速率
               specific_rate = abs(rate_day) * (hours / 24)
               
               try:
