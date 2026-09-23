@@ -214,7 +214,7 @@ if uploaded_file:
     )
 
   st.sidebar.markdown("---")
-  st.sidebar.header("⚙️ 圖表縱軸 (Y 軸) 範圍設定")
+  st.sidebar.header("⚙️ 5. 圖表縱軸 (Y 軸) 範圍設定")
 
   use_manual_y = st.sidebar.checkbox("手動固定【水位】縱軸數值", value=False)
   manual_y_min, manual_y_max = 0.0, 0.0
@@ -248,37 +248,6 @@ if uploaded_file:
           "雨量最大值 (Rain Y max)", value=suggest_rain_max, format="%.2f"
       )
 
-  # --- 效能優化 (移至側邊欄最後，去除編號，預設關閉) ---
-  st.sidebar.markdown("---")
-  st.sidebar.header("⚡ 效能與圖表優化 (選配)")
-  total_rows = len(df)
-  enable_downsample = False
-  resample_freq = "1H"
-
-  if total_rows > 5000:
-    st.sidebar.warning(
-        f"⚠️ 偵測到資料達 {total_rows:,} 筆。目前已啟用 WebGL GPU 加速引擎，若仍感卡頓可勾選降採樣。"
-    )
-    enable_downsample = st.sidebar.checkbox(
-        "啟用資料降採樣（平均取樣）", value=False
-    )
-  else:
-    enable_downsample = st.sidebar.checkbox(
-        "啟用資料降採樣（平均取樣）", value=False
-    )
-
-  if enable_downsample:
-    freq_option = st.sidebar.selectbox(
-        "降採樣頻率", ["15分鐘 (15T)", "1小時 (1H)", "6小時 (6H)", "每日 (1D)"], index=1
-    )
-    freq_map = {
-        "15分鐘 (15T)": "15min",
-        "1小時 (1H)": "H",
-        "6小時 (6H)": "6H",
-        "每日 (1D)": "D",
-    }
-    resample_freq = freq_map[freq_option]
-
   # --- 主畫面區塊 ---
   if start_dt >= end_dt:
     st.error("開始時間必須早於結束時間！")
@@ -294,23 +263,6 @@ if uploaded_file:
             (df_rain[r_time_col] >= start_dt)
             & (df_rain[r_time_col] <= end_dt)
         ].copy()
-
-    if enable_downsample and not df_filtered.empty:
-      df_backup = df_filtered.copy()
-      try:
-          df_filtered = (
-              df_filtered.set_index(time_col)[[water_col]]
-              .resample(resample_freq)
-              .mean(numeric_only=True)
-              .reset_index()
-          )
-          df_filtered = df_filtered.dropna(subset=[water_col])
-          if df_filtered.empty:
-              df_filtered = df_backup
-              st.warning("⚠️ 降採樣後找不到有效資料，已退回使用原始數值繪圖。")
-      except Exception as e:
-          df_filtered = df_backup
-          st.warning(f"⚠️ 降採樣功能發生異常，已退回使用原始資料繪圖。")
 
     if df_filtered.empty:
       st.warning(
@@ -382,9 +334,9 @@ if uploaded_file:
           row_heights=[0.7, 0.3] if rows_count == 2 else [1.0],
       )
 
-      # 【終極優化】使用 go.Scattergl (WebGL) 大幅提升幾萬筆資料的渲染速度與滑鼠流暢度
+      # 恢復為最穩定的基礎 go.Scatter 繪圖，確保所有瀏覽器皆能正常執行
       fig.add_trace(
-          go.Scattergl(
+          go.Scatter(
               x=df_filtered[time_col],
               y=df_filtered[water_col],
               mode="lines",
@@ -512,12 +464,12 @@ if uploaded_file:
       st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
       
       # =========================================================
-      # 降雨與水位相關性分析 (對數迴歸散佈圖) - 【終極優化】使用摺疊收納
+      # 降雨與水位相關性分析 (對數迴歸散佈圖)
       # =========================================================
       if has_rain and len(selected_rain_cols) > 0 and not df_rain_filtered.empty:
           st.markdown("---")
           
-          # 將運算較重的圖表隱藏在 Expander 裡面，讓主要網頁秒開
+          # 將運算較重的圖表隱藏在 Expander 裡面
           with st.expander("🔗 點擊展開：降雨與水位相關性分析 (對數迴歸)", expanded=False):
               st.write("擷取您選定時間區間內的**每日最大降雨量**與**每日最高水位**進行配對，利用對數函數 ($y = a \cdot \ln(x) + b$) 擬合其相關性。$R^2$ 數值越接近 1，代表兩者相關性越高。")
               
@@ -555,9 +507,9 @@ if uploaded_file:
                                   
                                   fig_scatter = go.Figure()
                                   
-                                  # 散佈圖同樣啟用 WebGL (Scattergl) 提升流暢度
+                                  # 恢復穩定的標準 go.Scatter
                                   fig_scatter.add_trace(
-                                      go.Scattergl(
+                                      go.Scatter(
                                           x=x_val, 
                                           y=y_val,
                                           mode='markers',
@@ -572,7 +524,7 @@ if uploaded_file:
                                   y_trend = a * np.log(x_trend) + b
                                   
                                   fig_scatter.add_trace(
-                                      go.Scattergl(
+                                      go.Scatter(
                                           x=x_trend, 
                                           y=y_trend,
                                           mode='lines',
