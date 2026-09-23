@@ -332,7 +332,7 @@ if uploaded_file:
       else:
         rain_hover_vals = [0.0] * len(df_filtered)
 
-      # 上圖：地下水位折線圖（統一時間顯示格式為 %Y-%m-%d %H:%M）
+      # 上圖：地下水位折線圖（回復使用原本的 datetime 格式 x 軸）
       fig.add_trace(
           go.Scatter(
               x=df_filtered[time_col],
@@ -343,11 +343,10 @@ if uploaded_file:
               line=dict(color="#1f77b4", width=2),
               customdata=rain_hover_vals,
               hovertemplate=(
-                  f"時間: %{{x|%Y-%m-%d %H:%M}}<br>水位: %{{y:.3f}}"
-                  f" m<br>{selected_rain_col}:"
+                  f"水位: %{{y:.3f}} m<br>{selected_rain_col}:"
                   " %{customdata:.1f} mm<extra></extra>"
                   if has_rain
-                  else "時間: %{x|%Y-%m-%d %H:%M}<br>水位: %{y:.3f} m<extra></extra>"
+                  else "水位: %{y:.3f} m<extra></extra>"
               ),
           ),
           row=1,
@@ -359,7 +358,7 @@ if uploaded_file:
         df_rain_filtered = df_rain[
             (df_rain[r_time_col] >= start_dt)
             & (df_rain[r_time_col] <= end_dt)
-        ]
+        ].copy()
         if not df_rain_filtered.empty:
           fig.add_trace(
               go.Bar(
@@ -368,8 +367,7 @@ if uploaded_file:
                   name=selected_rain_col,
                   marker_color="#0044cc",
                   hovertemplate=(
-                      f"時間: %{{x|%Y-%m-%d %H:%M}}<br>{selected_rain_col}:"
-                      " %{y:.1f} mm<extra></extra>"
+                      f"{selected_rain_col}: %{{y:.1f}} mm<extra></extra>"
                   ),
               ),
               row=2,
@@ -429,6 +427,9 @@ if uploaded_file:
               xanchor="left",
               yanchor="top",
           )
+
+      # 這裡是最關鍵的修正！利用 hoverformat 控制左上角標題的數字格式
+      fig.update_xaxes(hoverformat="%Y-%m-%d %H:%M")
 
       fig.update_layout(
           template="plotly_white",
