@@ -11,31 +11,44 @@ st.set_page_config(
 )
 st.title("💧 地下水位升降與颱風降雨分析工具")
 st.write(
-    "支援 CSV 與 Excel 格式上傳，提供彈性欄位對應、多時段雨量比較、動態速率換算與對數迴歸相關性分析。"
+    "支援 CSV 與 Excel 格式上傳（具備智慧欄位掃描與自動降噪），提供彈性欄位對應、多時段雨量比較、動態水位速率換算與對數迴歸相關性分析。"
 )
 
 
 def load_file_flexible(uploaded_file):
-  """強固型檔案讀取器：支援 CSV 與 Excel (.xlsx/.xls)"""
+  """超強固的 Excel/CSV 讀取器，自動避開中文說明雜訊列"""
   file_extension = uploaded_file.name.split(".")[-1].lower()
   
   if file_extension in ["xlsx", "xls"]:
     try:
-      # 嘗試用 pandas 讀取 excel (依賴 openpyxl)
       xls = pd.ExcelFile(uploaded_file)
       df_raw = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0], header=None)
       
-      # 自動尋找包含 'Time' 或時間格式的行作為標頭
+      best_col_idx = 0
+      max_valid_dates = 0
+      for col_idx in range(df_raw.shape[1]):
+        parsed = pd.to_datetime(df_raw.iloc[:, col_idx], errors='coerce')
+        valid_count = parsed.notna().sum()
+        if valid_count > max_valid_dates:
+          max_valid_dates = valid_count
+          best_col_idx = col_idx
+      
       header_row = 0
       for idx, row in df_raw.iterrows():
-        row_str = str(row.values)
-        if 'time' in row_str.lower() or '時間' in row_str or '日期' in row_str or 'r1' in row_str.lower():
-          header_row = idx
-          break
-      
+        if pd.notna(row.iloc[best_col_idx]) and (str(row.iloc[best_col_idx]).strip().lower() in ['time', '時間', '日期'] or pd.to_datetime(row.iloc[best_col_idx], errors='coerce') is not pd.NaT):
+          if idx > 0 and pd.to_datetime(df_raw.iloc[idx-1, best_col_idx], errors='coerce') is pd.NaT:
+            header_row = idx - 1
+            break
+          elif idx == 0:
+            header_row = 0
+            break
+
       df = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0], header=header_row)
+      if not any('time' in str(c).lower() or '時間' in str(c) or '日期' in str(c) for c in df.columns):
+        if df.shape[1] > best_col_idx:
+          df.columns = [f"欄位_{i}" if i != best_col_idx else "Time" for i in range(df.shape[1])]
     except ImportError:
-      st.error("⚠️ 伺服器缺少 `openpyxl` 套件，無法解析 Excel 檔案。請在 `requirements.txt` 中加入 `openpyxl` 並重新啟動！")
+      st.error("⚠️ 伺服器缺少 `openpyxl` 套件，無法解析 Excel 檔案。請在 `requirements.txt` 中加入 `openpyxl`！")
       return pd.DataFrame()
     except Exception as e:
       st.error(f"⚠️ 無法讀取 Excel 檔案：{e}")
@@ -51,7 +64,6 @@ def load_file_flexible(uploaded_file):
         uploaded_file.seek(0)
         df = pd.read_csv(uploaded_file, encoding="cp950", errors="ignore")
 
-  # 確保欄位名稱唯一
   new_cols = []
   for i, col in enumerate(df.columns):
       col_str = str(col).strip()
@@ -282,10 +294,10 @@ if not water_df.empty and time_col and water_col:
       col1.metric("初始水位", f"{level_start:.2f} m")
       col2.metric("結束水位", f"{level_end:.2f} m")
       col3.metric(f"🔺 水位{trend_word}幅度", f"{abs(level_diff):.2f} m")
-      col4.metric(f"區間平均{trend_word}速率 (m/day)", f"{abs(rate_day):.2f}")
+      col4.metric(f"區間平均水位{trend_word}速率 (m/day)", f"{abs(rate_day):.2f}")
 
       if not df_rain_filtered.empty and len(selected_rain_cols) > 0:
-          st.markdown(f"#### 🌧️ 對應降雨時段之平均{trend_word}速率與極值")
+          st.markdown(f"#### 🌧️ 對應降雨時段之平均水位{trend_word}速率與區間最大雨量")
           r_cols = st.columns(len(selected_rain_cols))
           
           for idx, r_col in enumerate(selected_rain_cols):
@@ -296,6 +308,7 @@ if not water_df.empty and time_col and water_col:
               elif "日" in r_col or "day" in r_col.lower():
                   hours = 24
                   
+              # 依據降雨時段換算對應的水位升降速率
               specific_rate = abs(rate_day) * (hours / 24)
               
               try:
@@ -305,7 +318,7 @@ if not water_df.empty and time_col and water_col:
                   max_r_val = 0.0
               
               r_cols[idx].metric(
-                  label=f"【{r_col}】{trend_word}速率", 
+                  label=f"【{r_col}】對應水位{trend_word}速率", 
                   value=f"{specific_rate:.2f} m/{r_col}",
                   delta=f"區間內最大雨量: {max_r_val:.2f} mm",
                   delta_color="off"
