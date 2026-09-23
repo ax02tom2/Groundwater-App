@@ -11,47 +11,32 @@ st.set_page_config(
 )
 st.title("💧 地下水位升降與颱風降雨分析工具")
 st.write(
-    "支援 CSV 與 Excel 格式上傳（具備智慧欄位掃描與自動降噪），提供彈性欄位對應、多時段雨量比較、動態速率換算與對數迴歸相關性分析。"
+    "支援 CSV 與 Excel 格式上傳，提供彈性欄位對應、多時段雨量比較、動態速率換算與對數迴歸相關性分析。"
 )
 
 
 def load_file_flexible(uploaded_file):
-  """智慧全域掃描讀取器：自動尋找包含日期時間的最佳欄位"""
+  """強固型檔案讀取器：支援 CSV 與 Excel (.xlsx/.xls)"""
   file_extension = uploaded_file.name.split(".")[-1].lower()
   
   if file_extension in ["xlsx", "xls"]:
     try:
+      # 嘗試用 pandas 讀取 excel (依賴 openpyxl)
       xls = pd.ExcelFile(uploaded_file)
       df_raw = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0], header=None)
       
-      # 智慧掃描：尋找哪一欄包含最多可解析的日期時間格式
-      best_col_idx = 0
-      max_valid_dates = 0
-      for col_idx in range(df_raw.shape[1]):
-        parsed = pd.to_datetime(df_raw.iloc[:, col_idx], errors='coerce')
-        valid_count = parsed.notna().sum()
-        if valid_count > max_valid_dates:
-          max_valid_dates = valid_count
-          best_col_idx = col_idx
-      
-      # 如果找到包含時間的欄位，我們以該欄位所在的行作為標頭 (Header)
+      # 自動尋找包含 'Time' 或時間格式的行作為標頭
       header_row = 0
       for idx, row in df_raw.iterrows():
-        if pd.notna(row.iloc[best_col_idx]) and (str(row.iloc[best_col_idx]).strip().lower() in ['time', '時間', '日期'] or pd.to_datetime(row.iloc[best_col_idx], errors='coerce') is not pd.NaT):
-          # 檢查這一行是不是真正的標頭或第一筆資料
-          if idx > 0 and pd.to_datetime(df_raw.iloc[idx-1, best_col_idx], errors='coerce') is pd.NaT:
-            header_row = idx - 1
-            break
-          elif idx == 0:
-            header_row = 0
-            break
-
-      df = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0], header=header_row)
+        row_str = str(row.values)
+        if 'time' in row_str.lower() or '時間' in row_str or '日期' in row_str or 'r1' in row_str.lower():
+          header_row = idx
+          break
       
-      # 若欄位名稱沒有包含 Time，直接把那個最佳欄位命名為 Time
-      if not any('time' in str(c).lower() or '時間' in str(c) or '日期' in str(c) for c in df.columns):
-        if df.shape[1] > best_col_idx:
-          df.columns = [f"欄位_{i}" if i != best_col_idx else "Time" for i in range(df.shape[1])]
+      df = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0], header=header_row)
+    except ImportError:
+      st.error("⚠️ 伺服器缺少 `openpyxl` 套件，無法解析 Excel 檔案。請在 `requirements.txt` 中加入 `openpyxl` 並重新啟動！")
+      return pd.DataFrame()
     except Exception as e:
       st.error(f"⚠️ 無法讀取 Excel 檔案：{e}")
       return pd.DataFrame()
@@ -66,7 +51,7 @@ def load_file_flexible(uploaded_file):
         uploaded_file.seek(0)
         df = pd.read_csv(uploaded_file, encoding="cp950", errors="ignore")
 
-  # 清理與確保欄位名稱唯一
+  # 確保欄位名稱唯一
   new_cols = []
   for i, col in enumerate(df.columns):
       col_str = str(col).strip()
