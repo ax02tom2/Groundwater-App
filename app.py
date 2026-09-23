@@ -11,31 +11,28 @@ st.set_page_config(
 )
 st.title("💧 地下水位升降與颱風降雨分析工具")
 st.write(
-    "支援 CSV 與 Excel 格式上傳（自動適應特殊雨量/水位排版），提供彈性欄位對應、多時段雨量比較、動態速率換算與對數迴歸相關性分析。"
+    "支援 CSV 與 Excel 格式上傳（具備強效雜訊過濾與自動標頭辨識），提供彈性欄位對應、多時段雨量比較、動態速率換算與對數迴歸相關性分析。"
 )
 
 
 def load_file_flexible(uploaded_file):
-  """智慧讀取 CSV 或 Excel 檔案，自動處理複雜排版與多工作表"""
+  """超強固的 Excel/CSV 讀取器，自動避開中文說明雜訊列"""
   file_extension = uploaded_file.name.split(".")[-1].lower()
   
   if file_extension in ["xlsx", "xls"]:
     try:
-      # 讀取 Excel 檔案
       xls = pd.ExcelFile(uploaded_file)
-      df = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0])
+      # 讀取原始資料不設 header，由我們自己找尋真正的欄位名稱行
+      df_raw = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0], header=None)
       
-      # 檢查是否含有類似 'Time' 或時間格式的欄位，若沒有則嘗試尋找包含時間的列作為標頭
-      if not any(col for col in df.columns if 'time' in str(col).lower() or '日期' in str(col) or '時間' in str(col)):
-        # 重新掃描前幾行找出真正的標頭
-        df_raw = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0], header=None)
-        header_row = 0
-        for idx, row in df_raw.iterrows():
-          row_str = str(row.values)
-          if 'Time' in row_str or '時間' in row_str or '日期' in row_str or 'R1' in row_str:
-            header_row = idx
-            break
-        df = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0], header=header_row)
+      header_row = 0
+      for idx, row in df_raw.iterrows():
+        row_str = str(row.values)
+        if 'time' in row_str.lower() or '時間' in row_str or '日期' in row_str or 'r1' in row_str.lower():
+          header_row = idx
+          break
+      
+      df = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0], header=header_row)
     except Exception as e:
       st.error(f"⚠️ 無法讀取 Excel 檔案：{e}")
       return pd.DataFrame()
@@ -87,7 +84,6 @@ if uploaded_file:
     st.sidebar.success("✔️ 水位檔案載入成功")
     all_cols = list(water_df.columns)
     
-    # 智慧尋找預設的時間與水位欄位
     default_time_idx = 0
     default_water_idx = min(1, len(all_cols) - 1)
     for i, c in enumerate(all_cols):
@@ -101,6 +97,9 @@ if uploaded_file:
 
     def clean_time(t):
       t = str(t)
+      # 過濾掉明顯非時間的中文說明行
+      if any(w in t for w in ["降雨量", "地下水位", "下田埔", "秀巒", "nan", "None"]):
+          return None
       t = t.replace("®É", ":").replace("¤À", ":").replace("¬í", "")
       t = t.replace("時", ":").replace("分", ":").replace("秒", "")
       cleaned = re.sub(r"[^\d/\-\: ]", " ", t)
@@ -126,7 +125,6 @@ if uploaded_rain:
     st.sidebar.success("✔️ 降雨檔案載入成功")
     r_all_cols = list(rain_df.columns)
     
-    # 智慧尋找預設的降雨時間欄位
     default_r_time_idx = 0
     for i, c in enumerate(r_all_cols):
       if 'time' in c.lower() or '時間' in c or '日期' in c:
@@ -147,6 +145,9 @@ if uploaded_rain:
 
     def clean_rain_time(t):
       t = str(t)
+      # 過濾掉雨量檔中常見的中文標頭與雜訊行
+      if any(w in t for w in ["降雨量", "地下水位", "下田埔", "秀巒", "nan", "None", "Time"]):
+          return None
       t = t.replace("®É", ":").replace("¤À", ":").replace("¬í", "")
       t = t.replace("時", ":").replace("分", ":").replace("秒", "")
       cleaned = re.sub(r"[^\d/\-\: ]", " ", t)
