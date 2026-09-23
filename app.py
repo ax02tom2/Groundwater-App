@@ -134,39 +134,8 @@ if uploaded_file:
         min_date = min(min_date, df_rain[r_time_col].min())
         max_date = max(max_date, df_rain[r_time_col].max())
 
-  # --- 效能優化：大數據降採樣設定 ---
   st.sidebar.markdown("---")
-  st.sidebar.header("⚡ 2. 效能與圖表優化")
-  total_rows = len(df)
-  enable_downsample = False
-  resample_freq = "1H"
-
-  if total_rows > 5000:
-    st.sidebar.warning(
-        f"⚠️ 偵測到水位資料筆數較多 ({total_rows:,} 筆)，建議啟用降採樣以保持流暢。"
-    )
-    enable_downsample = st.sidebar.checkbox(
-        "啟用資料降採樣（加速繪圖）", value=True
-    )
-  else:
-    enable_downsample = st.sidebar.checkbox(
-        "啟用資料降採樣（平均取樣）", value=False
-    )
-
-  if enable_downsample:
-    freq_option = st.sidebar.selectbox(
-        "降採樣頻率", ["15分鐘 (15T)", "1小時 (1H)", "6小時 (6H)", "每日 (1D)"], index=1
-    )
-    freq_map = {
-        "15分鐘 (15T)": "15min",
-        "1小時 (1H)": "H",
-        "6小時 (6H)": "6H",
-        "每日 (1D)": "D",
-    }
-    resample_freq = freq_map[freq_option]
-
-  st.sidebar.markdown("---")
-  st.sidebar.header("⏱️ 3. 颱風/事件區間設定")
+  st.sidebar.header("⏱️ 2. 颱風/事件區間設定")
   start_date = st.sidebar.date_input(
       "開始日期",
       min_date.date(),
@@ -185,9 +154,8 @@ if uploaded_file:
   start_dt = pd.to_datetime(f"{start_date} {start_time}")
   end_dt = pd.to_datetime(f"{end_date} {end_time}")
 
-  # 4. 颱風事件標註設定
   st.sidebar.markdown("---")
-  st.sidebar.header("📌 4. 颱風事件標註設定")
+  st.sidebar.header("📌 3. 颱風事件標註設定")
   if "events_df" not in st.session_state:
     st.session_state.events_df = pd.DataFrame({
         "事件名稱": ["凱米颱風", "康芮颱風"],
@@ -212,10 +180,9 @@ if uploaded_file:
       except:
         pass
 
-  # 雨量欄位選擇 (多選)
   if df_rain is not None and not df_rain.empty and r_val_cols:
     st.sidebar.markdown("---")
-    st.sidebar.header("🌧️ 5. 降雨欄位對應選擇 (可複選)")
+    st.sidebar.header("🌧️ 4. 降雨欄位對應選擇 (可複選)")
     default_names = []
     for name_pref in ["1小時", "降雨量", "rain", "Rain"]:
       if name_pref in r_val_cols:
@@ -225,9 +192,8 @@ if uploaded_file:
         "選擇要繪圖與分析的雨量欄位", r_val_cols, default=default_names
     )
 
-  # --- 縱軸範圍設定 ---
   st.sidebar.markdown("---")
-  st.sidebar.header("⚙️ 6. 圖表縱軸 (Y 軸) 範圍設定")
+  st.sidebar.header("⚙️ 5. 圖表縱軸 (Y 軸) 範圍設定")
 
   use_manual_y = st.sidebar.checkbox("手動固定【水位】縱軸數值", value=False)
   manual_y_min, manual_y_max = 0.0, 0.0
@@ -258,10 +224,40 @@ if uploaded_file:
           "雨量最大值 (Rain Y max)", value=suggest_rain_max, format="%.2f"
       )
 
+  # --- 效能優化：大數據降採樣設定 (移至側邊欄最後) ---
+  st.sidebar.markdown("---")
+  st.sidebar.header("⚡ 效能與圖表優化")
+  total_rows = len(df)
+  enable_downsample = False
+  resample_freq = "1H"
+
+  if total_rows > 5000:
+    st.sidebar.warning(
+        f"⚠️ 偵測到水位資料筆數較多 ({total_rows:,} 筆)，若操作卡頓可勾選下方降採樣功能。"
+    )
+    enable_downsample = st.sidebar.checkbox(
+        "啟用資料降採樣（加速繪圖）", value=False
+    )
+  else:
+    enable_downsample = st.sidebar.checkbox(
+        "啟用資料降採樣（平均取樣）", value=False
+    )
+
+  if enable_downsample:
+    freq_option = st.sidebar.selectbox(
+        "降採樣頻率", ["15分鐘 (15T)", "1小時 (1H)", "6小時 (6H)", "每日 (1D)"], index=1
+    )
+    freq_map = {
+        "15分鐘 (15T)": "15min",
+        "1小時 (1H)": "H",
+        "6小時 (6H)": "6H",
+        "每日 (1D)": "D",
+    }
+    resample_freq = freq_map[freq_option]
+
   if start_dt >= end_dt:
     st.sidebar.error("開始時間必須早於結束時間！")
   else:
-    # 進行資料區間篩選
     df_filtered = df[
         (df[time_col] >= start_dt) & (df[time_col] <= end_dt)
     ].copy()
@@ -274,11 +270,12 @@ if uploaded_file:
             & (df_rain[r_time_col] <= end_dt)
         ].copy()
 
-    # 套用降採樣以優化效能
+    # 套用降採樣以優化效能 (修正點：明確指定只對水位數值欄位做平均)
     if enable_downsample and not df_filtered.empty:
       df_filtered.set_index(time_col, inplace=True)
       df_filtered = (
-          df_filtered.resample(resample_freq)
+          df_filtered[[water_col]] # <--- 安全機制：確保只拿數值欄位做 resample
+          .resample(resample_freq)
           .mean()
           .reset_index()
           .dropna(subset=[water_col])
@@ -297,16 +294,11 @@ if uploaded_file:
           last_record[time_col] - first_record[time_col]
       ).total_seconds() / (24 * 3600)
       
-      # 計算日速率
       rate_day = level_diff / time_diff_days if time_diff_days > 0 else 0
-      
-      # 智慧判斷文字是「洩降」還是「上升」
       trend_word = "上升" if level_diff > 0 else ("洩降" if level_diff < 0 else "變化")
 
-      # --- 擴充的事件區間計算結果看板 ---
       st.markdown("### 📊 事件區間計算結果")
       
-      # 1. 總體水位統計 (全部改為小數點後 2 位)
       col1, col2, col3, col4 = st.columns(4)
       col1.metric("初始水位", f"{level_start:.2f} m")
       col2.metric("結束水位", f"{level_end:.2f} m")
@@ -316,7 +308,6 @@ if uploaded_file:
       )
       col4.metric(f"區間平均{trend_word}速率 (m/day)", f"{abs(rate_day):.2f}")
 
-      # 2. 配合降雨選擇的多組速率答案 (全部改為小數點後 2 位)
       if has_rain and len(selected_rain_cols) > 0 and not df_rain_filtered.empty:
           st.markdown(f"#### 🌧️ 對應降雨時段之平均{trend_word}速率與降雨極值")
           r_cols = st.columns(len(selected_rain_cols))
@@ -353,7 +344,6 @@ if uploaded_file:
           row_heights=[0.7, 0.3] if rows_count == 2 else [1.0],
       )
 
-      # 上圖：地下水位折線圖 (統一改為 2 位小數)
       fig.add_trace(
           go.Scatter(
               x=df_filtered[time_col],
@@ -368,7 +358,6 @@ if uploaded_file:
           col=1,
       )
 
-      # 下圖：降雨量長條圖 (統一改為 2 位小數)
       if rows_count == 2:
         bar_colors = ["#1A237E", "#B71C1C", "#1B5E20", "#4A148C", "#E65100", "#004D40"]
         
@@ -403,7 +392,6 @@ if uploaded_file:
               col=1,
           )
 
-      # 自動計算並在圖面上標註事件數值 (統一改為 2 位小數)
       for ev_name, ev_dt in custom_events:
         if start_dt <= ev_dt <= end_dt:
           water_val_str = "N/A"
