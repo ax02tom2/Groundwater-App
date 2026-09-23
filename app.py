@@ -10,7 +10,7 @@ st.set_page_config(
 )
 st.title("💧 地下水位升降與颱風降雨分析工具")
 st.write(
-    "上傳水位與多時段降雨資料，支援上下雙圖同步聯動懸停顯示水位與雨量、多時段雨量切換、自訂事件標註與雙"
+    "上傳水位與降雨資料，支援動態選取雨量欄位、上下雙圖同步聯動懸停顯示水位與雨量、自訂事件標註與雙"
     " Y 軸範圍固定功能。"
 )
 
@@ -62,9 +62,19 @@ def load_and_clean_rain(file):
       df = pd.read_csv(file, encoding="cp950", errors="ignore")
 
   time_col = df.columns[0]
+  
+  # 清理時間欄位（相容可能的雜訊）
+  def clean_time(t):
+    t = str(t)
+    t = t.replace("®É", ":").replace("¤À", ":").replace("¬í", "")
+    t = t.replace("時", ":").replace("分", ":").replace("秒", "")
+    cleaned = re.sub(r"[^\d/\-\: ]", " ", t)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+  df[time_col] = df[time_col].apply(clean_time)
   df[time_col] = pd.to_datetime(df[time_col], errors="coerce", format="mixed")
 
-  # 將後續所有雨量時段欄位轉為數值
+  # 取得後續所有可用的數值欄位作為雨量選項
   rain_cols = list(df.columns[1:])
   for col in rain_cols:
     df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -84,9 +94,9 @@ uploaded_file = st.sidebar.file_uploader(
     "上傳地下水位 CSV 檔 (必填)", type=["csv"]
 )
 uploaded_rain = st.sidebar.file_uploader(
-    "上傳降雨量 CSV 檔 (選配，支援多時段時雨量)",
+    "上傳降雨量 CSV 檔 (選配)",
     type=["csv"],
-    help="請確保第一欄為時間，後續欄位為各時段雨量（如 1小時、24小時等）",
+    help="請確保第一欄為時間，後續欄位為各項雨量數據",
 )
 
 if uploaded_file:
@@ -144,24 +154,23 @@ if uploaded_file:
   start_dt = pd.to_datetime(f"{start_date} {start_time}")
   end_dt = pd.to_datetime(f"{end_date} {end_time}")
 
-  # 若有上傳多時段雨量，提供下拉選單供使用者選擇
+  # 若有上傳雨量檔且包含欄位，動態產生下拉選單供使用者挑選
   if df_rain is not None and not df_rain.empty and r_val_cols:
     st.sidebar.markdown("---")
-    st.sidebar.header("🌧️ 3. 降雨時段選擇")
-    default_idx = (
-        r_val_cols.index("24小時") if "24小時" in r_val_cols else 0
-    )
+    st.sidebar.header("🌧️ 3. 降雨欄位對應選擇")
+    # 智慧預設：若有「1小時」或「降雨量」優先選取，否則選第一個
+    default_idx = 0
+    for name_pref in ["1小時", "降雨量", "rain", "Rain"]:
+      if name_pref in r_val_cols:
+        default_idx = r_val_cols.index(name_pref)
+        break
     selected_rain_col = st.sidebar.selectbox(
-        "選擇要分析的雨量累積時段", r_val_cols, index=default_idx
+        "選擇要分析的雨量欄位", r_val_cols, index=default_idx
     )
 
   # --- 縱軸範圍設定 ---
   st.sidebar.markdown("---")
-  st.sidebar.header(
-      "⚙️ 4. 圖表縱軸 (Y 軸) 範圍設定"
-      if uploaded_rain
-      else "⚙️ 3. 圖表縱軸 (Y 軸) 範圍設定"
-  )
+  st.sidebar.header("⚙️ 4. 圖表縱軸 (Y 軸) 範圍設定")
 
   use_manual_y = st.sidebar.checkbox("手動固定【水位】縱軸數值", value=False)
   manual_y_min, manual_y_max = 0.0, 0.0
@@ -183,7 +192,7 @@ if uploaded_file:
       and selected_rain_col is not None
   ):
     use_manual_rain_y = st.sidebar.checkbox(
-        f"手動固定【{selected_rain_col}雨量】縱軸數值", value=False
+        f"手動固定【{selected_rain_col}】縱軸數值", value=False
     )
     if use_manual_rain_y:
       max_val_series = df_rain[selected_rain_col]
@@ -198,11 +207,7 @@ if uploaded_file:
       )
 
   st.sidebar.markdown("---")
-  st.sidebar.header(
-      "📌 5. 颱風事件標註設定"
-      if uploaded_rain
-      else "📌 4. 颱風事件標註設定"
-  )
+  st.sidebar.header("📌 5. 颱風事件標註設定")
   default_events = "凱米颱風, 2024-07-24\n康芮颱風, 2024-10-31"
   events_input = st.sidebar.text_area(
       "事件清單 (格式：名稱, YYYY-MM-DD)", value=default_events, height=100
@@ -289,8 +294,8 @@ if uploaded_file:
               line=dict(color="#1f77b4", width=2),
               customdata=rain_hover_vals,
               hovertemplate=(
-                  f"水位: %{{y:.3f}} m<br>{selected_rain_col}雨量: %{{customdata:.1f}}"
-                  " mm<extra></extra>"
+                  f"水位: %{{y:.3f}} m<br>{selected_rain_col}:"
+                  " %{customdata:.1f} mm<extra></extra>"
                   if has_rain
                   else "水位: %{y:.3f} m<extra></extra>"
               ),
@@ -310,11 +315,10 @@ if uploaded_file:
               go.Bar(
                   x=df_rain_filtered[r_time_col],
                   y=df_rain_filtered[selected_rain_col],
-                  name=f"降雨量 ({selected_rain_col})",
+                  name=selected_rain_col,
                   marker_color="#0044cc",
                   hovertemplate=(
-                      f"降雨量 ({selected_rain_col}): %{{y:.1f}}"
-                      " mm<extra></extra>"
+                      f"{selected_rain_col}: %{{y:.1f}} mm<extra></extra>"
                   ),
               ),
               row=2,
@@ -322,14 +326,14 @@ if uploaded_file:
           )
           if use_manual_rain_y:
             fig.update_yaxes(
-                title_text=f"降雨量 ({selected_rain_col}) (mm)",
+                title_text=f"{selected_rain_col} (mm)",
                 range=[0, manual_rain_max],
                 row=2,
                 col=1,
             )
           else:
             fig.update_yaxes(
-                title_text=f"降雨量 ({selected_rain_col}) (mm)",
+                title_text=f"{selected_rain_col} (mm)",
                 autorange=True,
                 row=2,
                 col=1,
@@ -348,7 +352,7 @@ if uploaded_file:
             closest_r_idx = (df_rain[r_time_col] - ev_dt).abs().idxmin()
             r_val = df_rain.loc[closest_r_idx, selected_rain_col]
             if pd.notna(r_val):
-              rain_val_str = f"{r_val:.1f} mm ({selected_rain_col})"
+              rain_val_str = f"{r_val:.1f} mm"
 
           label_text = (
               f"<b>{ev_name}</b><br>水位: {water_val_str}<br>雨量:"
