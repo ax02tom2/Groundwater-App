@@ -42,6 +42,7 @@ def load_and_clean_water(file):
 
   return (
       df.dropna(subset=[time_col, val_col])
+      .drop_duplicates(subset=[time_col])
       .sort_values(by=time_col)
       .reset_index(drop=True),
       time_col,
@@ -79,6 +80,7 @@ def load_and_clean_rain(file):
 
   return (
       df.dropna(subset=[time_col])
+      .drop_duplicates(subset=[time_col])
       .sort_values(by=time_col)
       .reset_index(drop=True),
       time_col,
@@ -282,14 +284,12 @@ if uploaded_file:
           "您可以在下方表格中直接新增、修改或刪除事件名稱與發生日期："
       )
 
-      # 初始化 Session State 儲存事件清單
       if "events_df" not in st.session_state:
         st.session_state.events_df = pd.DataFrame({
             "事件名稱": ["凱米颱風", "康芮颱風"],
             "事件日期": ["2024-07-24", "2024-10-31"],
         })
 
-      # 使用 st.data_editor 讓使用者以表格增刪改
       edited_events_df = st.data_editor(
           st.session_state.events_df,
           num_rows="dynamic",
@@ -298,7 +298,6 @@ if uploaded_file:
       )
       st.session_state.events_df = edited_events_df
 
-      # 解析表格中的事件
       custom_events = []
       for _, row in edited_events_df.iterrows():
         ev_name = str(row["事件名稱"]).strip()
@@ -325,7 +324,7 @@ if uploaded_file:
           row_heights=[0.7, 0.3] if has_rain else [1.0],
       )
 
-      # 準備對應雨量數據給水位圖做 hover 顯示
+      # 建立安全且快速的雨量對照
       rain_hover_vals = []
       if has_rain:
         rain_dict = dict(zip(df_rain[r_time_col], df_rain[selected_rain_col]))
