@@ -185,10 +185,37 @@ if uploaded_file:
   start_dt = pd.to_datetime(f"{start_date} {start_time}")
   end_dt = pd.to_datetime(f"{end_date} {end_time}")
 
+  # 4. 颱風事件標註設定
+  st.sidebar.markdown("---")
+  st.sidebar.header("📌 4. 颱風事件標註設定")
+  if "events_df" not in st.session_state:
+    st.session_state.events_df = pd.DataFrame({
+        "事件名稱": ["凱米颱風", "康芮颱風"],
+        "事件日期": ["2024-07-24", "2024-10-31"],
+    })
+
+  edited_events_df = st.sidebar.data_editor(
+      st.session_state.events_df,
+      num_rows="dynamic",
+      key="event_editor_sidebar",
+  )
+  st.session_state.events_df = edited_events_df
+
+  custom_events = []
+  for _, row in edited_events_df.iterrows():
+    ev_name = str(row["事件名稱"]).strip()
+    ev_date_str = str(row["事件日期"]).strip()
+    if ev_name and ev_name != "nan":
+      try:
+        ev_dt = pd.to_datetime(ev_date_str)
+        custom_events.append((ev_name, ev_dt))
+      except:
+        pass
+
   # 雨量欄位選擇
   if df_rain is not None and not df_rain.empty and r_val_cols:
     st.sidebar.markdown("---")
-    st.sidebar.header("🌧️ 4. 降雨欄位對應選擇")
+    st.sidebar.header("🌧️ 5. 降雨欄位對應選擇")
     default_idx = 0
     for name_pref in ["1小時", "降雨量", "rain", "Rain"]:
       if name_pref in r_val_cols:
@@ -200,7 +227,7 @@ if uploaded_file:
 
   # --- 縱軸範圍設定 ---
   st.sidebar.markdown("---")
-  st.sidebar.header("⚙️ 5. 圖表縱軸 (Y 軸) 範圍設定")
+  st.sidebar.header("⚙️ 6. 圖表縱軸 (Y 軸) 範圍設定")
 
   use_manual_y = st.sidebar.checkbox("手動固定【水位】縱軸數值", value=False)
   manual_y_min, manual_y_max = 0.0, 0.0
@@ -278,37 +305,6 @@ if uploaded_file:
       )
       col4.metric("平均速率 (m/day)", f"{rate:.4f}")
 
-      # --- 主畫面：表格化事件標註管理 ---
-      st.markdown("### 📌 颱風與重要事件標註管理")
-      st.write(
-          "您可以在下方表格中直接新增、修改或刪除事件名稱與發生日期："
-      )
-
-      if "events_df" not in st.session_state:
-        st.session_state.events_df = pd.DataFrame({
-            "事件名稱": ["凱米颱風", "康芮颱風"],
-            "事件日期": ["2024-07-24", "2024-10-31"],
-        })
-
-      edited_events_df = st.data_editor(
-          st.session_state.events_df,
-          num_rows="dynamic",
-          use_container_width=True,
-          key="event_editor",
-      )
-      st.session_state.events_df = edited_events_df
-
-      custom_events = []
-      for _, row in edited_events_df.iterrows():
-        ev_name = str(row["事件名稱"]).strip()
-        ev_date_str = str(row["事件日期"]).strip()
-        if ev_name and ev_name != "nan":
-          try:
-            ev_dt = pd.to_datetime(ev_date_str)
-            custom_events.append((ev_name, ev_dt))
-          except:
-            pass
-
       st.markdown("### 📈 水位與降雨事件歷線圖")
 
       has_rain = (
@@ -336,7 +332,7 @@ if uploaded_file:
       else:
         rain_hover_vals = [0.0] * len(df_filtered)
 
-      # 上圖：地下水位折線圖
+      # 上圖：地下水位折線圖（統一時間顯示格式為 %Y-%m-%d %H:%M）
       fig.add_trace(
           go.Scatter(
               x=df_filtered[time_col],
@@ -347,10 +343,11 @@ if uploaded_file:
               line=dict(color="#1f77b4", width=2),
               customdata=rain_hover_vals,
               hovertemplate=(
-                  f"水位: %{{y:.3f}} m<br>{selected_rain_col}:"
+                  f"時間: %{{x|%Y-%m-%d %H:%M}}<br>水位: %{{y:.3f}}"
+                  f" m<br>{selected_rain_col}:"
                   " %{customdata:.1f} mm<extra></extra>"
                   if has_rain
-                  else "水位: %{y:.3f} m<extra></extra>"
+                  else "時間: %{x|%Y-%m-%d %H:%M}<br>水位: %{y:.3f} m<extra></extra>"
               ),
           ),
           row=1,
@@ -371,7 +368,8 @@ if uploaded_file:
                   name=selected_rain_col,
                   marker_color="#0044cc",
                   hovertemplate=(
-                      f"{selected_rain_col}: %{{y:.1f}} mm<extra></extra>"
+                      f"時間: %{{x|%Y-%m-%d %H:%M}}<br>{selected_rain_col}:"
+                      " %{y:.1f} mm<extra></extra>"
                   ),
               ),
               row=2,
