@@ -12,7 +12,7 @@ st.set_page_config(
 st.title("💧 地下水位升降與颱風降雨分析工具")
 st.write(
     "上傳水位與降雨資料，支援多時段雨量疊加比較、動態速率換算、雙"
-    " Y 軸範圍固定功能，以及對數迴歸相關性分析。"
+    " Y 軸範圍固定功能，以及針對「突出事件」的對數迴歸分析。"
 )
 
 
@@ -28,7 +28,6 @@ def load_and_clean_water(file):
       file.seek(0)
       df = pd.read_csv(file, encoding="cp950", errors="ignore")
 
-  # 強制確保所有欄位名稱都是唯一的
   new_cols = []
   for i, col in enumerate(df.columns):
       col_str = str(col).strip()
@@ -73,7 +72,6 @@ def load_and_clean_rain(file):
       file.seek(0)
       df = pd.read_csv(file, encoding="cp950", errors="ignore")
 
-  # 強制確保所有欄位名稱都是唯一的
   new_cols = []
   for i, col in enumerate(df.columns):
       col_str = str(col).strip()
@@ -248,6 +246,37 @@ if uploaded_file:
           "雨量最大值 (Rain Y max)", value=suggest_rain_max, format="%.2f"
       )
 
+  # --- 效能優化 ---
+  st.sidebar.markdown("---")
+  st.sidebar.header("⚡ 效能與圖表優化 (選配)")
+  total_rows = len(df)
+  enable_downsample = False
+  resample_freq = "1H"
+
+  if total_rows > 5000:
+    st.sidebar.warning(
+        f"⚠️ 偵測到水位資料筆數較多 ({total_rows:,} 筆)，若操作卡頓可勾選下方降採樣功能。"
+    )
+    enable_downsample = st.sidebar.checkbox(
+        "啟用資料降採樣（平均取樣）", value=False
+    )
+  else:
+    enable_downsample = st.sidebar.checkbox(
+        "啟用資料降採樣（平均取樣）", value=False
+    )
+
+  if enable_downsample:
+    freq_option = st.sidebar.selectbox(
+        "降採樣頻率", ["15分鐘 (15T)", "1小時 (1H)", "6小時 (6H)", "每日 (1D)"], index=1
+    )
+    freq_map = {
+        "15分鐘 (15T)": "15min",
+        "1小時 (1H)": "H",
+        "6小時 (6H)": "6H",
+        "每日 (1D)": "D",
+    }
+    resample_freq = freq_map[freq_option]
+
   # --- 主畫面區塊 ---
   if start_dt >= end_dt:
     st.error("開始時間必須早於結束時間！")
@@ -263,6 +292,23 @@ if uploaded_file:
             (df_rain[r_time_col] >= start_dt)
             & (df_rain[r_time_col] <= end_dt)
         ].copy()
+
+    if enable_downsample and not df_filtered.empty:
+      df_backup = df_filtered.copy()
+      try:
+          df_filtered = (
+              df_filtered.set_index(time_col)[[water_col]]
+              .resample(resample_freq)
+              .mean(numeric_only=True)
+              .reset_index()
+          )
+          df_filtered = df_filtered.dropna(subset=[water_col])
+          if df_filtered.empty:
+              df_filtered = df_backup
+              st.warning("⚠️ 降採樣後找不到有效資料，已退回使用原始數值繪圖。")
+      except Exception as e:
+          df_filtered = df_backup
+          st.warning(f"⚠️ 降採樣功能發生異常，已退回使用原始資料繪圖。")
 
     if df_filtered.empty:
       st.warning(
@@ -334,13 +380,13 @@ if uploaded_file:
           row_heights=[0.7, 0.3] if rows_count == 2 else [1.0],
       )
 
-      # 恢復為最穩定的基礎 go.Scatter 繪圖，確保所有瀏覽器皆能正常執行
       fig.add_trace(
           go.Scatter(
               x=df_filtered[time_col],
               y=df_filtered[water_col],
               mode="lines",
-              name="地下水位",
+              name="地下水位"
+              + (" (已降採樣)" if enable_downsample else ""),
               line=dict(color="#1f77b4", width=2),
               hovertemplate="水位: %{y:.2f} m<extra></extra>"
           ),
@@ -464,16 +510,24 @@ if uploaded_file:
       st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
       
       # =========================================================
-      # 降雨與水位相關性分析 (對數迴歸散佈圖)
+      # 降雨與水位相關性分析 (對數迴歸散佈圖) - 突出事件特化版
       # =========================================================
       if has_rain and len(selected_rain_cols) > 0 and not df_rain_filtered.empty:
           st.markdown("---")
           
-          # 將運算較重的圖表隱藏在 Expander 裡面
           with st.expander("🔗 點擊展開：降雨與水位相關性分析 (對數迴歸)", expanded=False):
-              st.write("擷取您選定時間區間內的**每日最大降雨量**與**每日最高水位**進行配對，利用對數函數 ($y = a \cdot \ln(x) + b$) 擬合其相關性。$R^2$ 數值越接近 1，代表兩者相關性越高。")
+              st.markdown("""
+              擷取選定區間內的**每日極值**進行配對。為避免日常微弱降雨干擾回歸曲線，您可以設定**最低降雨門檻**，專注分析**突出降雨事件**。
+              此外，您在側邊欄標註的「颱風/事件」將會在圖上被**紅色星星**標記凸顯，讓您秒懂這些重大事件的極值位置！
+              """)
+              
+              col_a, col_b = st.columns([1, 2])
+              with col_a:
+                  # 讓使用者設定門檻濾除雜訊
+                  min_rain_threshold = st.number_input("設定有效降雨門檻 (mm/日)：", min_value=0.0, value=30.0, step=10.0, help="只將降雨量大於此數值的日子納入迴歸分析。")
               
               try:
+                  # 抓取日極值
                   df_w_daily = df_filtered.set_index(time_col)[[water_col]].resample('D').max().reset_index()
                   df_r_daily = df_rain_filtered.set_index(r_time_col)[selected_rain_cols].resample('D').max().reset_index()
                   
@@ -481,6 +535,11 @@ if uploaded_file:
                   df_r_daily['Date'] = df_r_daily[r_time_col].dt.date
                   
                   df_scatter = pd.merge(df_w_daily, df_r_daily, on='Date', how='inner')
+                  
+                  # 建立事件對照表，用於標註星星
+                  event_dict = {}
+                  for ev_name, ev_dt in custom_events:
+                      event_dict[ev_dt.date()] = ev_name
                   
                   tabs = st.tabs([f"📊 {col} 相關性" for col in selected_rain_cols])
                   
@@ -491,13 +550,30 @@ if uploaded_file:
                               w_arr = pd.to_numeric(df_scatter[water_col], errors='coerce').values
                               date_arr = df_scatter['Date'].values
                               
-                              valid_mask = (r_arr > 0) & (~np.isnan(w_arr))
-                              x_val = r_arr[valid_mask]
-                              y_val = w_arr[valid_mask]
-                              valid_dates = date_arr[valid_mask]
+                              # 關鍵邏輯：過濾掉小於 threshold 降雨量 以及缺失水位的資料
+                              valid_mask = (r_arr >= min_rain_threshold) & (~np.isnan(w_arr))
                               
-                              if len(x_val) > 2:
-                                  log_x = np.log(x_val)
+                              if np.sum(valid_mask) > 2:
+                                  # 將資料掛回 DataFrame 以方便篩選標記
+                                  df_valid = pd.DataFrame({
+                                      'Date': date_arr[valid_mask],
+                                      'Rain': r_arr[valid_mask],
+                                      'Water': w_arr[valid_mask]
+                                  })
+                                  
+                                  # 對應事件名稱
+                                  df_valid['EventName'] = df_valid['Date'].map(event_dict)
+                                  
+                                  # 分為一般點與事件點
+                                  df_normal = df_valid[df_valid['EventName'].isna()]
+                                  df_event = df_valid[df_valid['EventName'].notna()]
+                                  
+                                  x_val = df_valid['Rain'].values
+                                  y_val = df_valid['Water'].values
+                                  
+                                  # 1. 執行對數迴歸擬合 y = a * ln(x) + b (避免 log(0) 錯誤)
+                                  x_val_safe = np.where(x_val == 0, 1e-5, x_val)
+                                  log_x = np.log(x_val_safe)
                                   a, b = np.polyfit(log_x, y_val, 1)
                                   
                                   y_pred = a * log_x + b
@@ -507,21 +583,39 @@ if uploaded_file:
                                   
                                   fig_scatter = go.Figure()
                                   
-                                  # 恢復穩定的標準 go.Scatter
+                                  # 畫出一般觀測點 (藍色)
                                   fig_scatter.add_trace(
                                       go.Scatter(
-                                          x=x_val, 
-                                          y=y_val,
+                                          x=df_normal['Rain'], 
+                                          y=df_normal['Water'],
                                           mode='markers',
-                                          name='每日極值觀測點',
-                                          marker=dict(color='#3399FF', size=8, line=dict(color='white', width=1)),
-                                          customdata=valid_dates,
+                                          name='一般突出降雨日',
+                                          marker=dict(color='#3399FF', size=8, line=dict(color='white', width=1), opacity=0.7),
+                                          customdata=df_normal['Date'],
                                           hovertemplate="日期: %{customdata}<br>雨量: %{x:.2f} mm<br>水位: %{y:.2f} m<extra></extra>"
                                       )
                                   )
                                   
+                                  # 畫出使用者標註的事件點 (紅色大星星)
+                                  if not df_event.empty:
+                                      fig_scatter.add_trace(
+                                          go.Scatter(
+                                              x=df_event['Rain'], 
+                                              y=df_event['Water'],
+                                              mode='markers+text',
+                                              name='🔥 您的標註事件',
+                                              text=df_event['EventName'],
+                                              textposition="top center",
+                                              marker=dict(color='#FF3333', size=14, symbol='star', line=dict(color='black', width=1)),
+                                              customdata=df_event['Date'],
+                                              hovertemplate="<b>%{text}</b><br>日期: %{customdata}<br>雨量: %{x:.2f} mm<br>水位: %{y:.2f} m<extra></extra>"
+                                          )
+                                      )
+                                  
+                                  # 加入對數趨勢線
                                   x_trend = np.linspace(min(x_val), max(x_val), 100)
-                                  y_trend = a * np.log(x_trend) + b
+                                  x_trend_safe = np.where(x_trend == 0, 1e-5, x_trend)
+                                  y_trend = a * np.log(x_trend_safe) + b
                                   
                                   fig_scatter.add_trace(
                                       go.Scatter(
@@ -529,13 +623,13 @@ if uploaded_file:
                                           y=y_trend,
                                           mode='lines',
                                           name=f'對數趨勢線 (R² = {r2:.4f})',
-                                          line=dict(color='#0033CC', width=3)
+                                          line=dict(color='#0033CC', width=3, dash='dash')
                                       )
                                   )
                                   
                                   fig_scatter.update_layout(
                                       template='plotly_white',
-                                      title=dict(text=f"{r_col} vs 地下水位 (相似度 R² = {r2:.4f})", x=0.5, font=dict(size=20)),
+                                      title=dict(text=f"{r_col} vs 地下水位 (相似度 R² = {r2:.4f})", x=0.5, font=dict(size=18)),
                                       xaxis_title=f"{r_col} (mm)",
                                       yaxis_title="地下水位 (m)",
                                       height=500,
@@ -547,9 +641,9 @@ if uploaded_file:
                                   
                                   st.plotly_chart(fig_scatter, use_container_width=True)
                                   
-                                  st.info(f"💡 **模型解析**：對數方程式為 `y = {a:.4f} * ln(x) + {b:.4f}`。決定係數 $R^2$ 為 **{r2:.4f}**。")
+                                  st.info(f"💡 **分析結果**：排除小於 {min_rain_threshold} mm 的無效降雨後，共擷取 **{len(df_valid)}** 個突出事件點。對數方程式為 `y = {a:.4f} * ln(x) + {b:.4f}`，決定係數 $R^2$ 為 **{r2:.4f}**。")
                               else:
-                                  st.warning(f"⚠️ {r_col} 的有效降雨事件點不足，無法進行對數迴歸分析（需有大於 0 mm 的降雨日）。")
+                                  st.warning(f"⚠️ {r_col} 在大於等於 {min_rain_threshold} mm 的有效事件點不足，無法繪製對數趨勢。請嘗試調降門檻數值。")
                           except Exception as inner_e:
                               st.warning(f"⚠️ 該欄位運算發生錯誤：{inner_e}")
               except Exception as e:
