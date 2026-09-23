@@ -10,7 +10,7 @@ st.set_page_config(
 )
 st.title("💧 地下水位升降與颱風降雨分析工具")
 st.write(
-    "上傳水位與降雨資料，支援大數據降採樣流暢顯示、動態選取雨量欄位、表格化事件標註與雙"
+    "上傳水位與降雨資料，支援大數據降採樣流暢顯示、多時段雨量疊加比較、動態速率換算與雙"
     " Y 軸範圍固定功能。"
 )
 
@@ -125,7 +125,7 @@ if uploaded_file:
   df_rain = None
   r_time_col = None
   r_val_cols = []
-  selected_rain_col = None
+  selected_rain_cols = []
 
   if uploaded_rain:
     with st.spinner("正在解析降雨資料..."):
@@ -212,17 +212,17 @@ if uploaded_file:
       except:
         pass
 
-  # 雨量欄位選擇
+  # 雨量欄位選擇 (多選)
   if df_rain is not None and not df_rain.empty and r_val_cols:
     st.sidebar.markdown("---")
-    st.sidebar.header("🌧️ 5. 降雨欄位對應選擇")
-    default_idx = 0
+    st.sidebar.header("🌧️ 5. 降雨欄位對應選擇 (可複選)")
+    default_names = []
     for name_pref in ["1小時", "降雨量", "rain", "Rain"]:
       if name_pref in r_val_cols:
-        default_idx = r_val_cols.index(name_pref)
+        default_names = [name_pref]
         break
-    selected_rain_col = st.sidebar.selectbox(
-        "選擇要分析的雨量欄位", r_val_cols, index=default_idx
+    selected_rain_cols = st.sidebar.multiselect(
+        "選擇要繪圖與分析的雨量欄位", r_val_cols, default=default_names
     )
 
   # --- 縱軸範圍設定 ---
@@ -246,19 +246,14 @@ if uploaded_file:
   if (
       df_rain is not None
       and not df_rain.empty
-      and selected_rain_col is not None
+      and len(selected_rain_cols) > 0
   ):
     use_manual_rain_y = st.sidebar.checkbox(
-        f"手動固定【{selected_rain_col}】縱軸數值", value=False
+        "手動固定【雨量】縱軸數值", value=False
     )
     if use_manual_rain_y:
-      max_val_series = df_rain[selected_rain_col]
-      suggest_rain_max = (
-          float(max_val_series.max() * 1.2)
-          if not max_val_series.empty
-          and not pd.isna(max_val_series.max())
-          else 500.0
-      )
+      max_val = df_rain[selected_rain_cols].max().max()
+      suggest_rain_max = float(max_val * 1.2) if pd.notna(max_val) else 500.0
       manual_rain_max = st.sidebar.number_input(
           "雨量最大值 (Rain Y max)", value=suggest_rain_max, format="%.1f"
       )
@@ -270,6 +265,14 @@ if uploaded_file:
     df_filtered = df[
         (df[time_col] >= start_dt) & (df[time_col] <= end_dt)
     ].copy()
+
+    has_rain = df_rain is not None and not df_rain.empty
+    df_rain_filtered = pd.DataFrame()
+    if has_rain:
+        df_rain_filtered = df_rain[
+            (df_rain[r_time_col] >= start_dt)
+            & (df_rain[r_time_col] <= end_dt)
+        ].copy()
 
     # 套用降採樣以優化效能
     if enable_downsample and not df_filtered.empty:
@@ -293,46 +296,68 @@ if uploaded_file:
       time_diff_days = (
           last_record[time_col] - first_record[time_col]
       ).total_seconds() / (24 * 3600)
-      rate = level_diff / time_diff_days if time_diff_days > 0 else 0
+      
+      # 計算日速率
+      rate_day = level_diff / time_diff_days if time_diff_days > 0 else 0
+      
+      # 智慧判斷文字是「洩降」還是「上升」
+      trend_word = "上升" if level_diff > 0 else ("洩降" if level_diff < 0 else "變化")
 
+      # --- 擴充的事件區間計算結果看板 ---
       st.markdown("### 📊 事件區間計算結果")
+      
+      # 1. 總體水位統計
       col1, col2, col3, col4 = st.columns(4)
-      col1.metric("事件初始水位", f"{level_start:.3f}")
-      col2.metric("事件結束水位", f"{level_end:.3f}")
+      col1.metric("初始水位", f"{level_start:.3f} m")
+      col2.metric("結束水位", f"{level_end:.3f} m")
       col3.metric(
-          "🔺 水位上升幅度" if level_diff > 0 else "🔻 洩降幅度",
-          f"{level_diff:.3f}",
+          f"🔺 水位{trend_word}幅度",
+          f"{abs(level_diff):.3f} m",
       )
-      col4.metric("平均速率 (m/day)", f"{rate:.4f}")
+      col4.metric(f"區間平均{trend_word}速率 (m/day)", f"{abs(rate_day):.4f}")
+
+      # 2. 配合降雨選擇的多組速率答案
+      if has_rain and len(selected_rain_cols) > 0 and not df_rain_filtered.empty:
+          st.markdown(f"#### 🌧️ 對應降雨時段之平均{trend_word}速率與降雨極值")
+          r_cols = st.columns(len(selected_rain_cols))
+          
+          for idx, r_col in enumerate(selected_rain_cols):
+              # 智慧擷取欄位名稱中的小時數 (例如 "3小時" -> 3)
+              hours = 1
+              match = re.search(r'(\d+)', r_col)
+              if match:
+                  hours = int(match.group(1))
+              elif "日" in r_col or "day" in r_col.lower():
+                  hours = 24
+                  
+              # 換算為該時段的專屬速率
+              specific_rate = abs(rate_day) * (hours / 24)
+              
+              # 取得該時段在區間內的最大降雨量
+              max_r = df_rain_filtered[r_col].max()
+              max_r_val = max_r if pd.notna(max_r) else 0.0
+              
+              r_cols[idx].metric(
+                  label=f"【{r_col}】{trend_word}速率", 
+                  value=f"{specific_rate:.4f} m/{r_col}",
+                  delta=f"區間內最大雨量: {max_r_val:.1f} mm",
+                  delta_color="off"
+              )
 
       st.markdown("### 📈 水位與降雨事件歷線圖")
 
-      has_rain = (
-          df_rain is not None and not df_rain.empty and selected_rain_col
-      )
-      rows_count = 2 if has_rain else 1
+      rows_count = 2 if has_rain and len(selected_rain_cols) > 0 else 1
 
       fig = make_subplots(
           rows=rows_count,
           cols=1,
           shared_xaxes=True,
           vertical_spacing=0.1,
-          row_heights=[0.7, 0.3] if has_rain else [1.0],
+          row_heights=[0.7, 0.3] if rows_count == 2 else [1.0],
       )
 
-      # 建立安全且快速的雨量對照
-      rain_hover_vals = []
-      if has_rain:
-        rain_dict = dict(zip(df_rain[r_time_col], df_rain[selected_rain_col]))
-        for t in df_filtered[time_col]:
-          match_val = rain_dict.get(t, 0.0)
-          rain_hover_vals.append(
-              match_val if pd.notna(match_val) else 0.0
-          )
-      else:
-        rain_hover_vals = [0.0] * len(df_filtered)
-
-      # 上圖：地下水位折線圖（回復使用原本的 datetime 格式 x 軸）
+      # 上圖：地下水位折線圖
+      # (因 Plotly x unified 會自動統整所有圖層的數值，故不需手動塞入 customdata)
       fig.add_trace(
           go.Scatter(
               x=df_filtered[time_col],
@@ -341,52 +366,48 @@ if uploaded_file:
               name="地下水位"
               + (" (已降採樣)" if enable_downsample else ""),
               line=dict(color="#1f77b4", width=2),
-              customdata=rain_hover_vals,
-              hovertemplate=(
-                  f"水位: %{{y:.3f}} m<br>{selected_rain_col}:"
-                  " %{customdata:.1f} mm<extra></extra>"
-                  if has_rain
-                  else "水位: %{y:.3f} m<extra></extra>"
-              ),
+              hovertemplate="水位: %{y:.3f} m<extra></extra>"
           ),
           row=1,
           col=1,
       )
 
-      # 下圖：降雨量長條圖
-      if has_rain:
-        df_rain_filtered = df_rain[
-            (df_rain[r_time_col] >= start_dt)
-            & (df_rain[r_time_col] <= end_dt)
-        ].copy()
-        if not df_rain_filtered.empty:
-          fig.add_trace(
-              go.Bar(
-                  x=df_rain_filtered[r_time_col],
-                  y=df_rain_filtered[selected_rain_col],
-                  name=selected_rain_col,
-                  marker_color="#0044cc",
-                  hovertemplate=(
-                      f"{selected_rain_col}: %{{y:.1f}} mm<extra></extra>"
-                  ),
-              ),
+      # 下圖：降雨量長條圖 (多組繪製)
+      if rows_count == 2:
+        # 設定一組顏色來區分不同的雨量長條
+        bar_colors = ["#0044cc", "#00aaff", "#00ffcc", "#3333ff", "#009999"]
+        
+        for idx, r_col in enumerate(selected_rain_cols):
+            c = bar_colors[idx % len(bar_colors)]
+            fig.add_trace(
+                go.Bar(
+                    x=df_rain_filtered[r_time_col],
+                    y=df_rain_filtered[r_col],
+                    name=r_col,
+                    marker_color=c,
+                    hovertemplate=f"{r_col}: %{{y:.1f}} mm<extra></extra>"
+                ),
+                row=2,
+                col=1,
+            )
+            
+        # 若有多個雨量，讓它們在同一個時間點並排顯示 (Group)
+        fig.update_layout(barmode='group')
+        
+        if use_manual_rain_y:
+          fig.update_yaxes(
+              title_text="雨量 (mm)",
+              range=[0, manual_rain_max],
               row=2,
               col=1,
           )
-          if use_manual_rain_y:
-            fig.update_yaxes(
-                title_text=f"{selected_rain_col} (mm)",
-                range=[0, manual_rain_max],
-                row=2,
-                col=1,
-            )
-          else:
-            fig.update_yaxes(
-                title_text=f"{selected_rain_col} (mm)",
-                autorange=True,
-                row=2,
-                col=1,
-            )
+        else:
+          fig.update_yaxes(
+              title_text="雨量 (mm)",
+              autorange=True,
+              row=2,
+              col=1,
+          )
 
       # 自動計算並在圖面上標註事件數值
       for ev_name, ev_dt in custom_events:
@@ -396,16 +417,18 @@ if uploaded_file:
             closest_w_idx = (df[time_col] - ev_dt).abs().idxmin()
             water_val_str = f"{df.loc[closest_w_idx, water_col]:.3f} m"
 
-          rain_val_str = "N/A"
-          if has_rain and not df_rain.empty:
+          rain_strs = []
+          if has_rain and not df_rain.empty and selected_rain_cols:
             closest_r_idx = (df_rain[r_time_col] - ev_dt).abs().idxmin()
-            r_val = df_rain.loc[closest_r_idx, selected_rain_col]
-            if pd.notna(r_val):
-              rain_val_str = f"{r_val:.1f} mm"
+            for r_col in selected_rain_cols:
+                r_val = df_rain.loc[closest_r_idx, r_col]
+                if pd.notna(r_val):
+                    rain_strs.append(f"{r_val:.1f} mm ({r_col})")
+                    
+          rain_val_str = "<br>      ".join(rain_strs) if rain_strs else "N/A"
 
           label_text = (
-              f"<b>{ev_name}</b><br>水位: {water_val_str}<br>雨量:"
-              f" {rain_val_str}"
+              f"<b>{ev_name}</b><br>水位: {water_val_str}<br>雨量: {rain_val_str}"
           )
 
           fig.add_vline(
@@ -428,13 +451,23 @@ if uploaded_file:
               yanchor="top",
           )
 
-      # 這裡是最關鍵的修正！利用 hoverformat 控制左上角標題的數字格式
-      fig.update_xaxes(hoverformat="%Y-%m-%d %H:%M")
+      # 確保 X 軸的英文縮寫去除，改為純數字
+      fig.update_xaxes(
+          hoverformat="%Y-%m-%d %H:%M",
+          tickformatstops=[
+              dict(dtickrange=[None, 3600000], value="%m-%d %H:%M"),
+              dict(dtickrange=[3600000, 86400000], value="%m-%d %H:%M"),
+              dict(dtickrange=[86400000, 604800000], value="%Y-%m-%d"),
+              dict(dtickrange=[604800000, "M1"], value="%Y-%m-%d"),
+              dict(dtickrange=["M1", "M12"], value="%Y-%m"),
+              dict(dtickrange=["M12", None], value="%Y")
+          ]
+      )
 
       fig.update_layout(
           template="plotly_white",
           hovermode="x unified",
-          height=650 if has_rain else 450,
+          height=650 if rows_count == 2 else 450,
           legend=dict(
               orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
           ),
