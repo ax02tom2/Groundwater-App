@@ -357,7 +357,6 @@ if uploaded_file:
       )
 
       # 上圖：地下水位折線圖
-      # (因 Plotly x unified 會自動統整所有圖層的數值，故不需手動塞入 customdata)
       fig.add_trace(
           go.Scatter(
               x=df_filtered[time_col],
@@ -372,10 +371,10 @@ if uploaded_file:
           col=1,
       )
 
-      # 下圖：降雨量長條圖 (多組繪製)
+      # 下圖：降雨量長條圖 (多組繪製，採用高對比深色系)
       if rows_count == 2:
-        # 設定一組顏色來區分不同的雨量長條
-        bar_colors = ["#0044cc", "#00aaff", "#00ffcc", "#3333ff", "#009999"]
+        # 使用深藍、深紅、深綠、深紫、深橘等高對比顏色
+        bar_colors = ["#1A237E", "#B71C1C", "#1B5E20", "#4A148C", "#E65100", "#004D40"]
         
         for idx, r_col in enumerate(selected_rain_cols):
             c = bar_colors[idx % len(bar_colors)]
@@ -384,7 +383,7 @@ if uploaded_file:
                     x=df_rain_filtered[r_time_col],
                     y=df_rain_filtered[r_col],
                     name=r_col,
-                    marker_color=c,
+                    marker=dict(color=c, line=dict(width=0)), # 移除邊線，讓顏色更飽和明顯
                     hovertemplate=f"{r_col}: %{{y:.1f}} mm<extra></extra>"
                 ),
                 row=2,
