@@ -10,7 +10,7 @@ st.set_page_config(
 )
 st.title("💧 地下水位升降與颱風降雨分析工具")
 st.write(
-    "上傳水位與降雨資料，支援動態選取雨量欄位、上下雙圖同步聯動懸停顯示水位與雨量、自訂事件標註與雙"
+    "上傳水位與降雨資料，支援大數據降採樣流暢顯示、動態選取雨量欄位、表格化事件標註與雙"
     " Y 軸範圍固定功能。"
 )
 
@@ -62,8 +62,7 @@ def load_and_clean_rain(file):
       df = pd.read_csv(file, encoding="cp950", errors="ignore")
 
   time_col = df.columns[0]
-  
-  # 清理時間欄位（相容可能的雜訊）
+
   def clean_time(t):
     t = str(t)
     t = t.replace("®É", ":").replace("¤À", ":").replace("¬í", "")
@@ -74,7 +73,6 @@ def load_and_clean_rain(file):
   df[time_col] = df[time_col].apply(clean_time)
   df[time_col] = pd.to_datetime(df[time_col], errors="coerce", format="mixed")
 
-  # 取得後續所有可用的數值欄位作為雨量選項
   rain_cols = list(df.columns[1:])
   for col in rain_cols:
     df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -134,8 +132,39 @@ if uploaded_file:
         min_date = min(min_date, df_rain[r_time_col].min())
         max_date = max(max_date, df_rain[r_time_col].max())
 
+  # --- 效能優化：大數據降採樣設定 ---
   st.sidebar.markdown("---")
-  st.sidebar.header("⏱️ 2. 颱風/事件區間設定")
+  st.sidebar.header("⚡ 2. 效能與圖表優化")
+  total_rows = len(df)
+  enable_downsample = False
+  resample_freq = "1H"
+
+  if total_rows > 5000:
+    st.sidebar.warning(
+        f"⚠️ 偵測到水位資料筆數較多 ({total_rows:,} 筆)，建議啟用降採樣以保持流暢。"
+    )
+    enable_downsample = st.sidebar.checkbox(
+        "啟用資料降採樣（加速繪圖）", value=True
+    )
+  else:
+    enable_downsample = st.sidebar.checkbox(
+        "啟用資料降採樣（平均取樣）", value=False
+    )
+
+  if enable_downsample:
+    freq_option = st.sidebar.selectbox(
+        "降採樣頻率", ["15分鐘 (15T)", "1小時 (1H)", "6小時 (6H)", "每日 (1D)"], index=1
+    )
+    freq_map = {
+        "15分鐘 (15T)": "15min",
+        "1小時 (1H)": "H",
+        "6小時 (6H)": "6H",
+        "每日 (1D)": "D",
+    }
+    resample_freq = freq_map[freq_option]
+
+  st.sidebar.markdown("---")
+  st.sidebar.header("⏱️ 3. 颱風/事件區間設定")
   start_date = st.sidebar.date_input(
       "開始日期",
       min_date.date(),
@@ -154,11 +183,10 @@ if uploaded_file:
   start_dt = pd.to_datetime(f"{start_date} {start_time}")
   end_dt = pd.to_datetime(f"{end_date} {end_time}")
 
-  # 若有上傳雨量檔且包含欄位，動態產生下拉選單供使用者挑選
+  # 雨量欄位選擇
   if df_rain is not None and not df_rain.empty and r_val_cols:
     st.sidebar.markdown("---")
-    st.sidebar.header("🌧️ 3. 降雨欄位對應選擇")
-    # 智慧預設：若有「1小時」或「降雨量」優先選取，否則選第一個
+    st.sidebar.header("🌧️ 4. 降雨欄位對應選擇")
     default_idx = 0
     for name_pref in ["1小時", "降雨量", "rain", "Rain"]:
       if name_pref in r_val_cols:
@@ -170,7 +198,7 @@ if uploaded_file:
 
   # --- 縱軸範圍設定 ---
   st.sidebar.markdown("---")
-  st.sidebar.header("⚙️ 4. 圖表縱軸 (Y 軸) 範圍設定")
+  st.sidebar.header("⚙️ 5. 圖表縱軸 (Y 軸) 範圍設定")
 
   use_manual_y = st.sidebar.checkbox("手動固定【水位】縱軸數值", value=False)
   manual_y_min, manual_y_max = 0.0, 0.0
@@ -206,32 +234,23 @@ if uploaded_file:
           "雨量最大值 (Rain Y max)", value=suggest_rain_max, format="%.1f"
       )
 
-  st.sidebar.markdown("---")
-  st.sidebar.header("📌 5. 颱風事件標註設定")
-  default_events = "凱米颱風, 2024-07-24\n康芮颱風, 2024-10-31"
-  events_input = st.sidebar.text_area(
-      "事件清單 (格式：名稱, YYYY-MM-DD)", value=default_events, height=100
-  )
-
-  custom_events = []
-  if events_input:
-    for line in events_input.split("\n"):
-      if "," in line:
-        parts = line.split(",")
-        ev_name = parts[0].strip()
-        ev_date_str = parts[1].strip()
-        try:
-          ev_dt = pd.to_datetime(ev_date_str)
-          custom_events.append((ev_name, ev_dt))
-        except:
-          pass
-
   if start_dt >= end_dt:
     st.sidebar.error("開始時間必須早於結束時間！")
   else:
+    # 進行資料區間篩選
     df_filtered = df[
         (df[time_col] >= start_dt) & (df[time_col] <= end_dt)
-    ]
+    ].copy()
+
+    # 套用降採樣以優化效能
+    if enable_downsample and not df_filtered.empty:
+      df_filtered.set_index(time_col, inplace=True)
+      df_filtered = (
+          df_filtered.resample(resample_freq)
+          .mean()
+          .reset_index()
+          .dropna(subset=[water_col])
+      )
 
     if df_filtered.empty:
       st.warning(
@@ -256,6 +275,40 @@ if uploaded_file:
           f"{level_diff:.3f}",
       )
       col4.metric("平均速率 (m/day)", f"{rate:.4f}")
+
+      # --- 主畫面：表格化事件標註管理 ---
+      st.markdown("### 📌 颱風與重要事件標註管理")
+      st.write(
+          "您可以在下方表格中直接新增、修改或刪除事件名稱與發生日期："
+      )
+
+      # 初始化 Session State 儲存事件清單
+      if "events_df" not in st.session_state:
+        st.session_state.events_df = pd.DataFrame({
+            "事件名稱": ["凱米颱風", "康芮颱風"],
+            "事件日期": ["2024-07-24", "2024-10-31"],
+        })
+
+      # 使用 st.data_editor 讓使用者以表格增刪改
+      edited_events_df = st.data_editor(
+          st.session_state.events_df,
+          num_rows="dynamic",
+          use_container_width=True,
+          key="event_editor",
+      )
+      st.session_state.events_df = edited_events_df
+
+      # 解析表格中的事件
+      custom_events = []
+      for _, row in edited_events_df.iterrows():
+        ev_name = str(row["事件名稱"]).strip()
+        ev_date_str = str(row["事件日期"]).strip()
+        if ev_name and ev_name != "nan":
+          try:
+            ev_dt = pd.to_datetime(ev_date_str)
+            custom_events.append((ev_name, ev_dt))
+          except:
+            pass
 
       st.markdown("### 📈 水位與降雨事件歷線圖")
 
@@ -290,7 +343,8 @@ if uploaded_file:
               x=df_filtered[time_col],
               y=df_filtered[water_col],
               mode="lines",
-              name="地下水位",
+              name="地下水位"
+              + (" (已降採樣)" if enable_downsample else ""),
               line=dict(color="#1f77b4", width=2),
               customdata=rain_hover_vals,
               hovertemplate=(
@@ -339,7 +393,7 @@ if uploaded_file:
                 col=1,
             )
 
-      # 自動計算並在圖面上標註當下水位與雨量數值
+      # 自動計算並在圖面上標註事件數值
       for ev_name, ev_dt in custom_events:
         if start_dt <= ev_dt <= end_dt:
           water_val_str = "N/A"
