@@ -11,23 +11,35 @@ st.set_page_config(
 )
 st.title("💧 地下水位升降與颱風降雨分析工具")
 st.write(
-    "支援 CSV 與 Excel 格式上傳，提供彈性欄位對應、多時段雨量比較、動態速率換算與對數迴歸相關性分析。"
+    "支援 CSV 與 Excel 格式上傳（自動適應特殊雨量/水位排版），提供彈性欄位對應、多時段雨量比較、動態速率換算與對數迴歸相關性分析。"
 )
 
 
 def load_file_flexible(uploaded_file):
-  """動態讀取 CSV 或 Excel 檔案，並處理重複欄位與編碼"""
+  """智慧讀取 CSV 或 Excel 檔案，自動處理複雜排版與多工作表"""
   file_extension = uploaded_file.name.split(".")[-1].lower()
   
   if file_extension in ["xlsx", "xls"]:
     try:
-      # 讀取 Excel 檔案，預設讀取第一個工作表
-      df = pd.read_excel(uploaded_file, sheet_name=0)
+      # 讀取 Excel 檔案
+      xls = pd.ExcelFile(uploaded_file)
+      df = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0])
+      
+      # 檢查是否含有類似 'Time' 或時間格式的欄位，若沒有則嘗試尋找包含時間的列作為標頭
+      if not any(col for col in df.columns if 'time' in str(col).lower() or '日期' in str(col) or '時間' in str(col)):
+        # 重新掃描前幾行找出真正的標頭
+        df_raw = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0], header=None)
+        header_row = 0
+        for idx, row in df_raw.iterrows():
+          row_str = str(row.values)
+          if 'Time' in row_str or '時間' in row_str or '日期' in row_str or 'R1' in row_str:
+            header_row = idx
+            break
+        df = pd.read_excel(uploaded_file, sheet_name=xls.sheet_names[0], header=header_row)
     except Exception as e:
       st.error(f"⚠️ 無法讀取 Excel 檔案：{e}")
       return pd.DataFrame()
   else:
-    # 讀取 CSV 檔案 (具備編碼降級機制)
     try:
       df = pd.read_csv(uploaded_file, encoding="utf-8")
     except UnicodeDecodeError:
@@ -38,11 +50,11 @@ def load_file_flexible(uploaded_file):
         uploaded_file.seek(0)
         df = pd.read_csv(uploaded_file, encoding="cp950", errors="ignore")
 
-  # 強制確保所有欄位名稱都是唯一的
+  # 清理與確保欄位名稱唯一
   new_cols = []
   for i, col in enumerate(df.columns):
       col_str = str(col).strip()
-      if col_str in new_cols or col_str == "" or col_str.lower() == "nan":
+      if col_str in new_cols or col_str == "" or col_str.lower() == "nan" or "unnamed" in col_str.lower():
           new_cols.append(f"欄位_{i}")
       else:
           new_cols.append(col_str)
@@ -57,7 +69,7 @@ uploaded_file = st.sidebar.file_uploader(
     "上傳地下水位檔案 (支援 CSV / Excel)", type=["csv", "xlsx", "xls"]
 )
 uploaded_rain = st.sidebar.file_uploader(
-    "上傳降雨量檔案 (選配，支援 CSV / Excel)",
+    "上傳降雨量檔案 (支援 CSV / Excel)",
     type=["csv", "xlsx", "xls"],
 )
 
@@ -75,14 +87,18 @@ if uploaded_file:
     st.sidebar.success("✔️ 水位檔案載入成功")
     all_cols = list(water_df.columns)
     
-    # 讓使用者手動指定水位檔案中的時間與水位欄位
-    default_time_idx = 0 if len(all_cols) > 0 else 0
-    default_water_idx = 1 if len(all_cols) > 1 else 0
-    
+    # 智慧尋找預設的時間與水位欄位
+    default_time_idx = 0
+    default_water_idx = min(1, len(all_cols) - 1)
+    for i, c in enumerate(all_cols):
+      if 'time' in c.lower() or '時間' in c or '日期' in c:
+        default_time_idx = i
+      elif '水位' in c or 'val' in c.lower() or 'r' in c.lower():
+        default_water_idx = i
+
     time_col = st.sidebar.selectbox("【水位檔】指定時間欄位", all_cols, index=default_time_idx)
     water_col = st.sidebar.selectbox("【水位檔】指定水位數值欄位", all_cols, index=default_water_idx)
 
-    # 清洗時間與水位數值
     def clean_time(t):
       t = str(t)
       t = t.replace("®É", ":").replace("¤À", ":").replace("¬í", "")
@@ -110,10 +126,19 @@ if uploaded_rain:
     st.sidebar.success("✔️ 降雨檔案載入成功")
     r_all_cols = list(rain_df.columns)
     
-    r_time_col = st.sidebar.selectbox("【降雨檔】指定時間欄位", r_all_cols, index=0)
+    # 智慧尋找預設的降雨時間欄位
+    default_r_time_idx = 0
+    for i, c in enumerate(r_all_cols):
+      if 'time' in c.lower() or '時間' in c or '日期' in c:
+        default_r_time_idx = i
+        break
+
+    r_time_col = st.sidebar.selectbox("【降雨檔】指定時間欄位", r_all_cols, index=default_r_time_idx)
     
-    # 預設勾選除了時間以外的所有數值欄位作為雨量選項
-    default_rain_candidates = [c for c in r_all_cols if c != r_time_col]
+    default_rain_candidates = [c for c in r_all_cols if c != r_time_col and not c.startswith("欄位_")]
+    if not default_rain_candidates:
+      default_rain_candidates = [c for c in r_all_cols if c != r_time_col]
+
     selected_rain_cols = st.sidebar.multiselect(
         "【降雨檔】選擇要分析的雨量欄位 (可複選)", 
         r_all_cols, 
@@ -496,7 +521,7 @@ if not water_df.empty and time_col and water_col:
                               else:
                                   st.warning(f"⚠️ {r_col} 在大於等於 {min_rain_threshold} mm 的有效事件點不足。")
                           except Exception as inner_e:
-                              st.warning(f"⚠️ 運算發生錯誤：{inner_e}")
+                              st.warning(f"⚠️ 該欄位運算發生錯誤：{inner_e}")
               except Exception as e:
                   st.warning(f"⚠️ 相關性分析異常：{e}")
 else:
