@@ -1,6 +1,6 @@
 import re
 import numpy as np
-import datetime
+from datetime import datetime
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -11,20 +11,14 @@ st.set_page_config(
 )
 st.title("💧 地下水位升降與颱風降雨分析工具")
 st.write(
-    "支援 CSV 與 Excel 格式上傳，提供圖表「框選」連動時間、動態水位速率換算與對數迴歸相關性分析。"
+    "支援 CSV 與 Excel 格式上傳（具備智慧欄位掃描與自動降噪），提供乾淨的欄位手動選取、動態水位速率換算與對數迴歸相關性分析。"
 )
-
-# 檢查 Streamlit 是否支援圖表選取事件 (v1.35.0+)
-try:
-    from packaging import version
-    supports_selection = version.parse(st.__version__) >= version.parse("1.35.0")
-except:
-    parts = st.__version__.split(".")
-    supports_selection = (int(parts[0]) > 1) or (int(parts[0]) == 1 and int(parts[1]) >= 35)
 
 
 def load_file_flexible(uploaded_file):
+  """強固型檔案讀取器：支援 CSV 與 Excel (.xlsx/.xls)"""
   file_extension = uploaded_file.name.split(".")[-1].lower()
+  
   if file_extension in ["xlsx", "xls"]:
     try:
       xls = pd.ExcelFile(uploaded_file)
@@ -73,6 +67,7 @@ def load_file_flexible(uploaded_file):
   new_cols = []
   for i, col in enumerate(df.columns):
       col_str = str(col).strip()
+      # 自動判讀 R1 為日雨量
       if col_str.upper() == "R1":
           col_str = "R1 (日雨量)"
       if col_str in new_cols or col_str == "" or col_str.lower() == "nan" or "unnamed" in col_str.lower():
@@ -83,19 +78,23 @@ def load_file_flexible(uploaded_file):
   return df
 
 
+# --- 側邊欄：資料上傳與彈性欄位對應 ---
 st.sidebar.header("📁 1. 資料上傳與欄位對應")
 
-if not supports_selection:
-    st.sidebar.error("⚠️ 您的 Streamlit 版本過舊 (<1.35.0)，不支援圖表框選功能。請更新環境中的 `streamlit` 套件。")
-
-uploaded_file = st.sidebar.file_uploader("上傳地下水位檔案 (支援 CSV / Excel)", type=["csv", "xlsx", "xls"])
-uploaded_rain = st.sidebar.file_uploader("上傳降雨量檔案 (支援 CSV / Excel)", type=["csv", "xlsx", "xls"])
+uploaded_file = st.sidebar.file_uploader(
+    "上傳地下水位檔案 (支援 CSV / Excel)", type=["csv", "xlsx", "xls"]
+)
+uploaded_rain = st.sidebar.file_uploader(
+    "上傳降雨量檔案 (支援 CSV / Excel)",
+    type=["csv", "xlsx", "xls"],
+)
 
 water_df = pd.DataFrame()
 rain_df = pd.DataFrame()
 time_col, water_col = None, None
 r_time_col, selected_rain_cols = None, []
 
+# 1. 處理水位資料
 if uploaded_file:
   with st.spinner("正在解析水位檔案..."):
     water_df = load_file_flexible(uploaded_file)
@@ -135,6 +134,7 @@ if uploaded_file:
         .reset_index(drop=True)
     )
 
+# 2. 處理降雨資料
 if uploaded_rain:
   with st.spinner("正在解析降雨檔案..."):
     rain_df = load_file_flexible(uploaded_rain)
@@ -150,7 +150,13 @@ if uploaded_rain:
         break
 
     r_time_col = st.sidebar.selectbox("【降雨檔】指定時間欄位", r_all_cols, index=default_r_time_idx)
-    selected_rain_cols = st.sidebar.multiselect("【降雨檔】選擇要分析的雨量欄位 (可複選)", r_all_cols, default=[])
+    
+    # 預設維持空白（不全選），讓使用者自己手動勾選想要的雨量欄位
+    selected_rain_cols = st.sidebar.multiselect(
+        "【降雨檔】選擇要分析的雨量欄位 (可複選)", 
+        r_all_cols, 
+        default=[] 
+    )
 
     def clean_rain_time(t):
       t = str(t)
@@ -188,83 +194,20 @@ if not water_df.empty and time_col and water_col:
       f"- **最低水位**：{min_val:.2f} m (發生於 {min_time.strftime('%Y-%m-%d %H:%M')})"
   )
 
-  # 計算真正的全域邊界
-  min_dt = water_df[time_col].min().to_pydatetime()
-  max_dt = water_df[time_col].max().to_pydatetime()
+  min_date, max_date = water_df[time_col].min(), water_df[time_col].max()
   if not rain_df.empty and r_time_col and len(selected_rain_cols) > 0:
-    min_dt = min(min_dt, rain_df[r_time_col].min().to_pydatetime())
-    max_dt = max(max_dt, rain_df[r_time_col].max().to_pydatetime())
-
-  suggested_start = min_dt
-  suggested_end = max_dt
-  is_box_selected = False
-
-  # 【雙重捕捉網】解析選取範圍 (包含 Points 與 Box)
-  water_chart_state = st.session_state.get("water_chart")
-  if water_chart_state:
-      sel = {}
-      if hasattr(water_chart_state, "selection"):
-          sel = water_chart_state.selection
-      elif isinstance(water_chart_state, dict):
-          sel = water_chart_state.get("selection", {})
-
-      x_vals = []
-      
-      # 方法 1：讀取框選的實體座標 (最精準)
-      box_data = sel.get("box", []) if isinstance(sel, dict) else getattr(sel, "box", [])
-      if box_data and len(box_data) > 0:
-          x_coords = box_data[0].get("x", [])
-          if x_coords:
-              x_vals.extend(x_coords)
-      
-      # 方法 2：讀取框到的點
-      pts_data = sel.get("points", []) if isinstance(sel, dict) else getattr(sel, "points", [])
-      if pts_data and len(pts_data) > 0:
-          x_vals.extend([p.get("x") for p in pts_data if p.get("x")])
-
-      if x_vals:
-          try:
-              parsed_x = pd.to_datetime(x_vals)
-              if parsed_x.tzinfo is not None or (hasattr(parsed_x, 'tz') and parsed_x.tz is not None):
-                  parsed_x = parsed_x.tz_localize(None)
-              
-              suggested_start = parsed_x.min().to_pydatetime()
-              suggested_end = parsed_x.max().to_pydatetime()
-              is_box_selected = True
-          except Exception:
-              pass
-
-  # 防呆機制：確保時間不會超過總資料邊界
-  def clamp_dt(target_dt, min_bound, max_bound):
-      return max(min_bound, min(target_dt, max_bound))
-
-  safe_start_dt = clamp_dt(suggested_start, min_dt, max_dt)
-  safe_end_dt = clamp_dt(suggested_end, min_dt, max_dt)
-
-  # 轉為原生格式
-  final_start_date = safe_start_dt.date()
-  final_start_time = safe_start_dt.time()
-  final_end_date = safe_end_dt.date()
-  final_end_time = safe_end_dt.time()
-  
-  global_min_date = min_dt.date()
-  global_max_date = max_dt.date()
+    min_date = min(min_date, rain_df[r_time_col].min())
+    max_date = max(max_date, rain_df[r_time_col].max())
 
   st.sidebar.markdown("---")
   st.sidebar.header("⏱️ 2. 颱風/事件區間設定")
-  
-  if is_box_selected:
-      st.sidebar.success("🎯 **已套用圖表框選區間！**\n\n(雙擊圖表空白處可清除框選)")
+  start_date = st.sidebar.date_input("開始日期", min_date.date(), min_value=min_date.date(), max_value=max_date.date())
+  start_time = st.sidebar.time_input("開始時間", min_date.time())
+  end_date = st.sidebar.date_input("結束日期", max_date.date(), min_value=min_date.date(), max_value=max_date.date())
+  end_time = st.sidebar.time_input("結束時間", max_date.time())
 
-  # 這裡的 value 會自動吃到圖表回傳的 final_start_date 與 final_end_date
-  start_date = st.sidebar.date_input("開始日期", value=final_start_date, min_value=global_min_date, max_value=global_max_date)
-  start_time = st.sidebar.time_input("開始時間", value=final_start_time)
-  end_date = st.sidebar.date_input("結束日期", value=final_end_date, min_value=global_min_date, max_value=global_max_date)
-  end_time = st.sidebar.time_input("結束時間", value=final_end_time)
-
-  # 組合最終篩選時間
-  start_dt_final = pd.to_datetime(f"{start_date} {start_time}")
-  end_dt_final = pd.to_datetime(f"{end_date} {end_time}")
+  start_dt = pd.to_datetime(f"{start_date} {start_time}")
+  end_dt = pd.to_datetime(f"{end_date} {end_time}")
 
   st.sidebar.markdown("---")
   st.sidebar.header("📌 3. 颱風事件標註設定")
@@ -274,7 +217,11 @@ if not water_df.empty and time_col and water_col:
         "事件日期": ["2024-07-24", "2024-10-31"],
     })
 
-  edited_events_df = st.sidebar.data_editor(st.session_state.events_df, num_rows="dynamic", key="event_editor_sidebar")
+  edited_events_df = st.sidebar.data_editor(
+      st.session_state.events_df,
+      num_rows="dynamic",
+      key="event_editor_sidebar",
+  )
   st.session_state.events_df = edited_events_df
 
   custom_events = []
@@ -310,17 +257,22 @@ if not water_df.empty and time_col and water_col:
           suggest_rain_max = 500.0
       manual_rain_max = st.sidebar.number_input("雨量最大值 (Rain Y max)", value=suggest_rain_max, format="%.2f")
 
-  if start_dt_final >= end_dt_final:
+  if start_dt >= end_dt:
     st.error("開始時間必須早於結束時間！")
   else:
-    df_filtered = water_df[(water_df[time_col] >= start_dt_final) & (water_df[time_col] <= end_dt_final)].copy()
+    df_filtered = water_df[
+        (water_df[time_col] >= start_dt) & (water_df[time_col] <= end_dt)
+    ].copy()
 
     df_rain_filtered = pd.DataFrame()
     if not rain_df.empty and r_time_col and len(selected_rain_cols) > 0:
-        df_rain_filtered = rain_df[(rain_df[r_time_col] >= start_dt_final) & (rain_df[r_time_col] <= end_dt_final)].copy()
+        df_rain_filtered = rain_df[
+            (rain_df[r_time_col] >= start_dt)
+            & (rain_df[r_time_col] <= end_dt)
+        ].copy()
 
     if df_filtered.empty:
-      st.warning("⚠️ 在您選擇的時間區間內找不到水位資料。請點擊圖表重新選取或調整範圍。")
+      st.warning("⚠️ 在您選擇的時間區間內找不到水位資料，請重新調整篩選範圍。")
     else:
       first_record = df_filtered.iloc[0]
       last_record = df_filtered.iloc[-1]
@@ -338,6 +290,7 @@ if not water_df.empty and time_col and water_col:
 
       st.markdown("### 📊 選擇區間之整體計算結果")
       
+      # 將 4 個欄位擴增為 5 個，新增計算天數
       col1, col2, col3, col4, col5 = st.columns(5)
       col1.metric("初始水位", f"{level_start:.2f} m")
       col2.metric("結束水位", f"{level_end:.2f} m")
@@ -350,7 +303,7 @@ if not water_df.empty and time_col and water_col:
           r_cols = st.columns(len(selected_rain_cols))
           
           for idx, r_col in enumerate(selected_rain_cols):
-              hours = 24
+              hours = 24  # 預設為日雨量 (R1)
               if "小時" in r_col or "h" in r_col.lower():
                   match = re.search(r'(\d+)', r_col)
                   if match:
@@ -379,19 +332,24 @@ if not water_df.empty and time_col and water_col:
       rows_count = 2 if not df_rain_filtered.empty and len(selected_rain_cols) > 0 else 1
 
       fig = make_subplots(
-          rows=rows_count, cols=1, shared_xaxes=True, vertical_spacing=0.1,
+          rows=rows_count,
+          cols=1,
+          shared_xaxes=True,
+          vertical_spacing=0.1,
           row_heights=[0.7, 0.3] if rows_count == 2 else [1.0],
       )
 
-      # 隱形捕捉網：加上肉眼看不見的點 (opacity=0)，讓 Plotly 可以 100% 成功選取
       fig.add_trace(
           go.Scatter(
-              x=water_df[time_col], y=water_df[water_col], 
-              mode="lines+markers",
-              name="地下水位", line=dict(color="#1f77b4", width=2),
-              marker=dict(size=2, opacity=0), # 關鍵：全透明的點
-              hovertemplate="水位: %{y:.2f} m<br>時間: %{x}<extra></extra>"
-          ), row=1, col=1,
+              x=df_filtered[time_col],
+              y=df_filtered[water_col],
+              mode="lines",
+              name="地下水位",
+              line=dict(color="#1f77b4", width=2),
+              hovertemplate="水位: %{y:.2f} m<extra></extra>"
+          ),
+          row=1,
+          col=1,
       )
 
       if rows_count == 2:
@@ -400,10 +358,14 @@ if not water_df.empty and time_col and water_col:
             c = bar_colors[idx % len(bar_colors)]
             fig.add_trace(
                 go.Bar(
-                    x=rain_df[r_time_col], y=rain_df[r_col], name=r_col,
+                    x=df_rain_filtered[r_time_col],
+                    y=df_rain_filtered[r_col],
+                    name=r_col,
                     marker=dict(color=c, line=dict(width=0)), 
                     hovertemplate=f"{r_col}: %{{y:.2f}} mm<extra></extra>"
-                ), row=2, col=1,
+                ),
+                row=2,
+                col=1,
             )
             
         fig.update_layout(barmode='group')
@@ -413,7 +375,7 @@ if not water_df.empty and time_col and water_col:
           fig.update_yaxes(title_text="雨量 (mm)", autorange=True, row=2, col=1)
 
       for ev_name, ev_dt in custom_events:
-        if start_dt_final <= ev_dt <= end_dt_final:
+        if start_dt <= ev_dt <= end_dt:
           water_val_str = "N/A"
           if not water_df.empty:
             closest_w_idx = (water_df[time_col] - ev_dt).abs().idxmin()
@@ -437,10 +399,10 @@ if not water_df.empty and time_col and water_col:
           rain_val_str = "<br>      ".join(rain_strs) if rain_strs else "N/A"
           label_text = f"<b>{ev_name}</b><br>水位: {water_val_str}<br>雨量: {rain_val_str}"
 
-          fig.add_vline(x=ev_dt, line_width=1.5, line_dash="dash", line_color="orange", row="all", col=1)
+          fig.add_vline(x=ev_dt, line_width=1.5, line_dash="dash", line_color="red", row="all", col=1)
           fig.add_annotation(
               x=ev_dt, y=1.0, yref="paper", text=label_text, showarrow=False, textangle=-90,
-              font=dict(size=11, color="orange"), xanchor="left", yanchor="top"
+              font=dict(size=11, color="red"), xanchor="left", yanchor="top"
           )
 
       fig.update_xaxes(
@@ -456,9 +418,10 @@ if not water_df.empty and time_col and water_col:
       )
 
       fig.update_layout(
-          template="plotly_white", hovermode="x unified", clickmode="none",
-          dragmode="select", # 保持為框選
-          height=650 if rows_count == 2 else 450, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+          template="plotly_white",
+          hovermode="x unified",
+          height=650 if rows_count == 2 else 450,
+          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
       )
 
       if use_manual_y:
@@ -466,14 +429,11 @@ if not water_df.empty and time_col and water_col:
       else:
         fig.update_yaxes(title_text="水位 (m)", autorange=True, row=1, col=1)
 
-      chart_kwargs = {"use_container_width": True, "config": {"scrollZoom": True}}
-      if supports_selection:
-          chart_kwargs["on_select"] = "rerun"
-          chart_kwargs["selection_mode"] = ["box", "lasso"]
-          chart_kwargs["key"] = "water_chart"
-
-      st.plotly_chart(fig, **chart_kwargs)
+      st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
       
+      # =========================================================
+      # 降雨與水位相關性分析 (對數迴歸散佈圖)
+      # =========================================================
       if not df_rain_filtered.empty and len(selected_rain_cols) > 0:
           st.markdown("---")
           with st.expander("🔗 點擊展開：降雨與水位相關性分析 (對數迴歸)", expanded=False):
@@ -508,7 +468,11 @@ if not water_df.empty and time_col and water_col:
                               valid_mask = (r_arr >= min_rain_threshold) & (~np.isnan(w_arr))
                               
                               if np.sum(valid_mask) > 2:
-                                  df_valid = pd.DataFrame({'Date': date_arr[valid_mask], 'Rain': r_arr[valid_mask], 'Water': w_arr[valid_mask]})
+                                  df_valid = pd.DataFrame({
+                                      'Date': date_arr[valid_mask],
+                                      'Rain': r_arr[valid_mask],
+                                      'Water': w_arr[valid_mask]
+                                  })
                                   
                                   df_valid['EventName'] = df_valid['Date'].map(event_dict)
                                   df_normal = df_valid[df_valid['EventName'].isna()]
@@ -527,18 +491,46 @@ if not water_df.empty and time_col and water_col:
                                   r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
                                   
                                   fig_scatter = go.Figure()
-                                  fig_scatter.add_trace(go.Scatter(x=df_normal['Rain'], y=df_normal['Water'], mode='markers', name='一般突出降雨日', marker=dict(color='#3399FF', size=8, line=dict(color='white', width=1), opacity=0.7), customdata=df_normal['Date'], hovertemplate="日期: %{customdata}<br>雨量: %{x:.2f} mm<br>水位: %{y:.2f} m<extra></extra>"))
+                                  fig_scatter.add_trace(
+                                      go.Scatter(
+                                          x=df_normal['Rain'], y=df_normal['Water'],
+                                          mode='markers', name='一般突出降雨日',
+                                          marker=dict(color='#3399FF', size=8, line=dict(color='white', width=1), opacity=0.7),
+                                          customdata=df_normal['Date'],
+                                          hovertemplate="日期: %{customdata}<br>雨量: %{x:.2f} mm<br>水位: %{y:.2f} m<extra></extra>"
+                                      )
+                                  )
                                   
                                   if not df_event.empty:
-                                      fig_scatter.add_trace(go.Scatter(x=df_event['Rain'], y=df_event['Water'], mode='markers+text', name='🔥 您的標註事件', text=df_event['EventName'], textposition="top center", marker=dict(color='#FF3333', size=14, symbol='star', line=dict(color='black', width=1)), customdata=df_event['Date'], hovertemplate="<b>%{text}</b><br>日期: %{customdata}<br>雨量: %{x:.2f} mm<br>水位: %{y:.2f} m<extra></extra>"))
+                                      fig_scatter.add_trace(
+                                          go.Scatter(
+                                              x=df_event['Rain'], y=df_event['Water'],
+                                              mode='markers+text', name='🔥 您的標註事件',
+                                              text=df_event['EventName'], textposition="top center",
+                                              marker=dict(color='#FF3333', size=14, symbol='star', line=dict(color='black', width=1)),
+                                              customdata=df_event['Date'],
+                                              hovertemplate="<b>%{text}</b><br>日期: %{customdata}<br>雨量: %{x:.2f} mm<br>水位: %{y:.2f} m<extra></extra>"
+                                          )
+                                      )
                                   
                                   x_trend = np.linspace(min(x_val), max(x_val), 100)
                                   x_trend_safe = np.where(x_trend == 0, 1e-5, x_trend)
                                   y_trend = a * np.log(x_trend_safe) + b
                                   
-                                  fig_scatter.add_trace(go.Scatter(x=x_trend, y=y_trend, mode='lines', name=f'對數趨勢線 (R² = {r2:.4f})', line=dict(color='#0033CC', width=3, dash='dash')))
+                                  fig_scatter.add_trace(
+                                      go.Scatter(
+                                          x=x_trend, y=y_trend,
+                                          mode='lines', name=f'對數趨勢線 (R² = {r2:.4f})',
+                                          line=dict(color='#0033CC', width=3, dash='dash')
+                                      )
+                                  )
                                   
-                                  fig_scatter.update_layout(template='plotly_white', title=dict(text=f"{r_col} vs 地下水位 (相似度 R² = {r2:.4f})", x=0.5, font=dict(size=18)), xaxis_title=f"{r_col} (mm)", yaxis_title="地下水位 (m)", height=500, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                                  fig_scatter.update_layout(
+                                      template='plotly_white',
+                                      title=dict(text=f"{r_col} vs 地下水位 (相似度 R² = {r2:.4f})", x=0.5, font=dict(size=18)),
+                                      xaxis_title=f"{r_col} (mm)", yaxis_title="地下水位 (m)",
+                                      height=500, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                                  )
                                   fig_scatter.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
                                   fig_scatter.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
                                   
@@ -550,3 +542,5 @@ if not water_df.empty and time_col and water_col:
                               st.warning(f"⚠️ 該欄位運算發生錯誤：{inner_e}")
               except Exception as e:
                   st.warning(f"⚠️ 相關性分析異常：{e}")
+else:
+  st.info("👈 請先由左側面板上傳地下水位檔案，並指定時間與數值欄位。")
