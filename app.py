@@ -290,11 +290,13 @@ if not water_df.empty and time_col and water_col:
 
       st.markdown("### 📊 選擇區間之整體計算結果")
       
-      col1, col2, col3, col4 = st.columns(4)
+      # 將 4 個欄位擴增為 5 個，新增計算天數
+      col1, col2, col3, col4, col5 = st.columns(5)
       col1.metric("初始水位", f"{level_start:.2f} m")
       col2.metric("結束水位", f"{level_end:.2f} m")
       col3.metric(f"🔺 水位{trend_word}幅度", f"{abs(level_diff):.2f} m")
       col4.metric(f"區間平均水位{trend_word}速率 (m/day)", f"{abs(rate_day):.2f}")
+      col5.metric("⏳ 區間計算天數", f"{time_diff_days:.2f} 天")
 
       if not df_rain_filtered.empty and len(selected_rain_cols) > 0:
           st.markdown(f"#### 🌧️ 對應降雨時段之平均水位{trend_word}速率與區間最大雨量")
