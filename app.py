@@ -199,31 +199,40 @@ if not water_df.empty and time_col and water_col:
   suggested_end = max_dt
   is_box_selected = False
 
-  # 【框選捕捉與強制覆寫機制】
+  # 【雙重捕捉網】解析選取範圍 (包含 Points 與 Box)
   water_chart_state = st.session_state.get("water_chart")
   if water_chart_state:
-      pts = []
+      sel = {}
       if hasattr(water_chart_state, "selection"):
-          pts = getattr(water_chart_state.selection, "points", [])
+          sel = water_chart_state.selection
       elif isinstance(water_chart_state, dict):
-          pts = water_chart_state.get("selection", {}).get("points", [])
+          sel = water_chart_state.get("selection", {})
 
-      if pts and len(pts) > 0:
-          # 抓出框框內的所有 x (時間)
-          x_vals = [p.get("x") for p in pts if p.get("x")]
-          if x_vals:
-              try:
-                  # 將所有捕捉到的點轉為 pandas DatetimeIndex 並去時區
-                  parsed_x = pd.to_datetime(x_vals)
-                  if parsed_x.tzinfo is not None or (hasattr(parsed_x, 'tz') and parsed_x.tz is not None):
-                      parsed_x = parsed_x.tz_localize(None)
-                  
-                  # 精確抓出框選的最左邊與最右邊
-                  suggested_start = parsed_x.min().to_pydatetime()
-                  suggested_end = parsed_x.max().to_pydatetime()
-                  is_box_selected = True
-              except Exception:
-                  pass
+      x_vals = []
+      
+      # 方法 1：讀取框選的實體座標 (最精準)
+      box_data = sel.get("box", []) if isinstance(sel, dict) else getattr(sel, "box", [])
+      if box_data and len(box_data) > 0:
+          x_coords = box_data[0].get("x", [])
+          if x_coords:
+              x_vals.extend(x_coords)
+      
+      # 方法 2：讀取框到的點
+      pts_data = sel.get("points", []) if isinstance(sel, dict) else getattr(sel, "points", [])
+      if pts_data and len(pts_data) > 0:
+          x_vals.extend([p.get("x") for p in pts_data if p.get("x")])
+
+      if x_vals:
+          try:
+              parsed_x = pd.to_datetime(x_vals)
+              if parsed_x.tzinfo is not None or (hasattr(parsed_x, 'tz') and parsed_x.tz is not None):
+                  parsed_x = parsed_x.tz_localize(None)
+              
+              suggested_start = parsed_x.min().to_pydatetime()
+              suggested_end = parsed_x.max().to_pydatetime()
+              is_box_selected = True
+          except Exception:
+              pass
 
   # 防呆機制：確保時間不會超過總資料邊界
   def clamp_dt(target_dt, min_bound, max_bound):
@@ -232,7 +241,7 @@ if not water_df.empty and time_col and water_col:
   safe_start_dt = clamp_dt(suggested_start, min_dt, max_dt)
   safe_end_dt = clamp_dt(suggested_end, min_dt, max_dt)
 
-  # 轉為原生格式，徹底避免 StreamlitAPIException
+  # 轉為原生格式
   final_start_date = safe_start_dt.date()
   final_start_time = safe_start_dt.time()
   final_end_date = safe_end_dt.date()
@@ -245,7 +254,7 @@ if not water_df.empty and time_col and water_col:
   st.sidebar.header("⏱️ 2. 颱風/事件區間設定")
   
   if is_box_selected:
-      st.sidebar.success("🎯 **已成功套用圖表框選區間！**\n\n(若想重新手動輸入，只要在圖表空白處「雙擊滑鼠」即可解除框選狀態)")
+      st.sidebar.success("🎯 **已套用圖表框選區間！**\n\n(雙擊圖表空白處可清除框選)")
 
   # 這裡的 value 會自動吃到圖表回傳的 final_start_date 與 final_end_date
   start_date = st.sidebar.date_input("開始日期", value=final_start_date, min_value=global_min_date, max_value=global_max_date)
@@ -374,11 +383,13 @@ if not water_df.empty and time_col and water_col:
           row_heights=[0.7, 0.3] if rows_count == 2 else [1.0],
       )
 
-      # 為了讓使用者隨時能拉框選，這裡我們直接畫出整份資料全貌
+      # 隱形捕捉網：加上肉眼看不見的點 (opacity=0)，讓 Plotly 可以 100% 成功選取
       fig.add_trace(
           go.Scatter(
-              x=water_df[time_col], y=water_df[water_col], mode="lines",
+              x=water_df[time_col], y=water_df[water_col], 
+              mode="lines+markers",
               name="地下水位", line=dict(color="#1f77b4", width=2),
+              marker=dict(size=2, opacity=0), # 關鍵：全透明的點
               hovertemplate="水位: %{y:.2f} m<br>時間: %{x}<extra></extra>"
           ), row=1, col=1,
       )
@@ -445,8 +456,8 @@ if not water_df.empty and time_col and water_col:
       )
 
       fig.update_layout(
-          template="plotly_white", hovermode="x unified", clickmode="event+select",
-          dragmode="select", # 預設改回「框選」模式
+          template="plotly_white", hovermode="x unified", clickmode="none",
+          dragmode="select", # 保持為框選
           height=650 if rows_count == 2 else 450, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
       )
 
@@ -458,7 +469,7 @@ if not water_df.empty and time_col and water_col:
       chart_kwargs = {"use_container_width": True, "config": {"scrollZoom": True}}
       if supports_selection:
           chart_kwargs["on_select"] = "rerun"
-          chart_kwargs["selection_mode"] = "box" # 確保啟動框選連動機制
+          chart_kwargs["selection_mode"] = ["box", "lasso"]
           chart_kwargs["key"] = "water_chart"
 
       st.plotly_chart(fig, **chart_kwargs)
